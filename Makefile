@@ -12,7 +12,7 @@ MCU_SPEC = cortex-m7
 # Define the chip architecture.
 LD_SCRIPT = STM32H743VITX_FLASH.ld
 
-TOOLCHAIN = /opt/gcc-arm/bin
+TOOLCHAIN ?= /opt/gcc-arm/bin
 CC  = $(TOOLCHAIN)/arm-none-eabi-gcc
 CPP = $(TOOLCHAIN)/arm-none-eabi-g++
 AS  = $(TOOLCHAIN)/arm-none-eabi-as
@@ -70,6 +70,7 @@ LFLAGS += -T$(LSCRIPT)
 # Source files.
 AS_SRC    = ./startup/startup_stm32h743vitx.s
 C_SRC   = ./src/main.c
+C_SRC  += ./src/pid.c
 C_SRC  += ./src/system_stm32h7xx.c
 
 INCLUDE  += -I./include

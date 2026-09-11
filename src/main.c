@@ -25,6 +25,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "pid.h"
 #include <stdint.h>
 
 
@@ -46,12 +47,6 @@ int _write(int handle, char* data, int size) {
   return size;
 }
 */
-
-/* Custom types --------------------------------------------------------------*/
-typedef union {
-  float single;
-  uint8_t bytes[4];
-} custom_float_t;
 
 /* Private function prototypes -----------------------------------------------*/
 static void SystemClock_Config(void);
@@ -78,15 +73,9 @@ int main(void)
   /* Initialise variables */
   float TAS = 0;
   float ref_TAS = 80;
-  float k_p = 500; 
-  float k_i = 30;
-  float k_d = 10; 
   float u = 0;
-  float err = 0;
-  float sum_err = 0;
-  float diff_err = 0.0;
-  float old_TAS = 66.5; 
-  float d = 0.1; 
+  pid_ctrl_t pid;
+  pid_init(&pid, 500.0f, 30.0f, 10.0f, 0.1f, 66.5f); // k_p, k_i, k_d, d, initial TAS
   uint8_t ch = '\0';
   custom_float_t rcv;
   custom_float_t snd;
@@ -103,11 +92,7 @@ int main(void)
     	                   
     	// Controller (PID)
     	TAS = rcv.single;                          // get true airspeed (TAS)
-    	err = ref_TAS-TAS;                         // proportional action
-    	diff_err = (old_TAS-TAS)/d;                // derivative action 
-    	sum_err += err*d;                          // integral action 
-    	u = k_p*err + k_i*sum_err + k_d*diff_err;  // control law
-    	old_TAS = TAS;                           
+    	u = pid_step(&pid, ref_TAS, TAS);          // control law
     	snd.single = u; 
     	
     	// Transmission to Simulink

@@ -1,0 +1,2 @@
+   text	   data	    bss	    dec	    hex	filename
+   2324	   1092	   1568	   4984	   1378	main.elf

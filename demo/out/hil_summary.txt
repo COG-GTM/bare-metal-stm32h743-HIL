@@ -1,0 +1,1 @@
+Step 120 -> 150 kt @ t=15s: rise(90%)=11.9s  overshoot=2.32 kt  settle(2%)=>45s  final err=-0.93 kt

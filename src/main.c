@@ -30,25 +30,6 @@
 #include <stdint.h>
 
 
-// Uncomment this if you want to use the printf function (for debug purpose)
-/*
-#include <stdio.h>   // to use the printf function
-#include <string.h>  // to use strings 
-
-// Override the 'write' clib method to implement 'printf' over UART.
-int _write(int handle, char* data, int size) {
-  int count = size;
-  
-  // invariant: data[0:i] have been added to TDR register  
-  while(count--) {
-      while(!(UART5->ISR & USART_ISR_TXE_TXFNF)) {}; // wait for empty transmit register
-      UART5->TDR = *data++; 
-  
-  }
-  return size;
-}
-*/
-
 /* Private function prototypes -----------------------------------------------*/
 static void SystemClock_Config(void);
 static void LED_Init(void);

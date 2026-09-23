@@ -6,7 +6,7 @@
 ## Architecture
 
 The PID control law lives in `src/pid.c` and knows nothing about registers.
-The byte protocol (`custom_float_t`, `'H'` header, `'\0'` terminator) lives in
+The byte protocol (explicit little-endian float32, `'H'` header, CRC-8, `'\0'` terminator) lives in
 `include/hil_protocol.h`. Both files are compiled twice:
 
 | Build            | Compiler          | I/O                             | Plant                              |
@@ -20,14 +20,14 @@ flowchart LR
         SIM["Simulink plant<br/>uart.slx<br/>point-mass aircraft"]
         FW["STM32H743 firmware<br/>src/main.c + src/pid.c<br/>bare-metal UART5, 480 MHz"]
         SIM -- "float32 TAS (4 bytes)" --> FW
-        FW -- "'H' + float32 thrust + '\\0'" --> SIM
+        FW -- "'H' + float32 thrust + CRC-8 + '\\0'" --> SIM
     end
 
     subgraph SW["Software-in-the-loop (host, no hardware)"]
         PY["host/plant.py<br/>same point-mass model<br/>RK4, ZOH @ 0.1 s"]
         NODE["host/pid_node<br/>host gcc build of<br/>src/pid.c + firmware loop"]
         PY -- "float32 TAS (4 bytes)" --> NODE
-        NODE -- "'H' + float32 thrust + '\\0'" --> PY
+        NODE -- "'H' + float32 thrust + CRC-8 + '\\0'" --> PY
     end
 
     PID["src/pid.c<br/>include/hil_protocol.h<br/>(single source)"]
@@ -38,7 +38,8 @@ flowchart LR
 
 Both sides of the loop talk the identical UART byte stream (38400 8N1 on the
 target; a pseudo-terminal on the host), so the host harness exercises the
-framing, the byte/float union and the control law exactly as the target does.
+framing, the float serialisation, the CRC and the control law exactly as the
+target does.
 
 ## Running it
 
@@ -99,7 +100,8 @@ host / emulated target / (and by construction) hardware.
 
 - `src/pid.c`, `include/pid.h` — `pid_ctrl_t`, `pid_init()`, `pid_step()`. Derivative is on the
   measurement `(v_{k-1} - v_k)/d`, as in the original firmware.
-- `include/hil_protocol.h` — `custom_float_t` union, header/terminator, payload size.
+- `include/hil_protocol.h` — `hil_float_encode/decode()` (explicit little-endian, no type punning),
+  `hil_frame_encode/decode()`, `hil_crc8()`, header/terminator/CRC, payload size.
 - `host/pid_node.c` — the firmware main loop with `UART_send_blocking`/`UART_rcv_blocking`
   reimplemented on a file descriptor. Takes an optional setpoint step
   (`ref step_ref step_sample`) so the harness can command a step without changing the protocol.
@@ -108,4 +110,6 @@ host / emulated target / (and by construction) hardware.
 
 Note: the README describes the header as `'A'`; the firmware (and therefore
 `hil_protocol.h`) uses `'H'`. Keep the Simulink receive block in sync with the
-constant in `hil_protocol.h`.
+constants in `hil_protocol.h`: the controller -> plant frame now carries a
+CRC-8 byte between the payload and the terminator, so `uart.slx` must receive 5
+bytes (payload + CRC), verify the CRC and drop mismatching samples.

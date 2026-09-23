@@ -73,7 +73,7 @@ int main(void)
   float TAS = 0;
   float ref_TAS = 80;
   float u = 0;
-  custom_float_t rcv;
+  uint8_t rcv[HIL_FLOAT_BYTES];
   uint8_t frame[HIL_FRAME_BYTES];
   pid_ctrl_t pid;
   pid_init(&pid, 500.0f, 30.0f, 10.0f, 0.1f, 66.5f);
@@ -85,14 +85,14 @@ int main(void)
     	// Reception from Simulink
     	for (int i=0; i<HIL_FLOAT_BYTES; i++)
     	{
-            UART_rcv_blocking(&rcv.bytes[i]);
+            UART_rcv_blocking(&rcv[i]);
     	}
     	                   
     	// Controller (PID)
-    	TAS = rcv.single;                          // get true airspeed (TAS)
+    	TAS = hil_float_decode(rcv);               // get true airspeed (TAS)
     	u = pid_step(&pid, ref_TAS, TAS);          // control law
     	
-    	// Transmission to Simulink: header + float32 + terminator
+    	// Transmission to Simulink: header + float32 + CRC-8 + terminator
     	hil_frame_encode(u, frame);
     	for (int i=0; i<HIL_FRAME_BYTES; i++)
     	{

@@ -52,7 +52,7 @@ int main(int argc, char **argv)
   long  step_at  = (argc > 4) ? atol(argv[4]) : -1;
   long  k = 0;
   float u = 0;
-  custom_float_t rcv;
+  uint8_t rcv[HIL_FLOAT_BYTES];
   uint8_t frame[HIL_FRAME_BYTES];
   pid_ctrl_t pid;
   pid_init(&pid, 500.0f, 30.0f, 10.0f, 0.1f, 66.5f);
@@ -60,14 +60,14 @@ int main(int argc, char **argv)
   while (1)
   {
     /* Reception from plant */
-    int r = hil_read_all(uart_fd, rcv.bytes, HIL_FLOAT_BYTES);
+    int r = hil_read_all(uart_fd, rcv, HIL_FLOAT_BYTES);
     if (r == 0 || (r < 0 && errno == EIO)) return 0;       /* peer closed (PTY master hangup -> EIO) */
     if (r < 0) { perror("read"); return 1; }
 
     /* Controller (PID) */
     if (step_at >= 0 && k == step_at) ref_TAS = step_ref;
     k++;
-    TAS = rcv.single;
+    TAS = hil_float_decode(rcv);
     u = pid_step(&pid, ref_TAS, TAS);
 
     /* Transmission to plant */

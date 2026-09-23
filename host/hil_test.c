@@ -20,19 +20,38 @@ int main(void)
   /* --- framing ------------------------------------------------------------ */
   uint8_t frame[HIL_FRAME_BYTES];
   hil_frame_encode(1.0f, frame);                    /* 0x3F800000 little endian */
-  CHECK(HIL_FRAME_BYTES == 6, "frame is 6 bytes: header + float32 + terminator");
-  CHECK(frame[0] == 'H' && frame[5] == '\0', "frame starts with 'H' and ends with NUL");
+  CHECK(HIL_FRAME_BYTES == 7, "frame is 7 bytes: header + float32 + CRC-8 + terminator");
+  CHECK(frame[0] == 'H' && frame[HIL_FRAME_BYTES - 1] == '\0',
+        "frame starts with 'H' and ends with NUL");
   CHECK(frame[1] == 0x00 && frame[2] == 0x00 && frame[3] == 0x80 && frame[4] == 0x3F,
         "payload is IEEE-754 float32 little endian (1.0f -> 00 00 80 3F)");
+  CHECK(frame[HIL_CRC_OFFSET] == hil_crc8(frame, HIL_CRC_OFFSET),
+        "CRC-8 byte covers header + payload");
 
-  custom_float_t back;
-  memcpy(back.bytes, &frame[1], HIL_FLOAT_BYTES);
-  CHECK(back.single == 1.0f, "payload round-trips through custom_float_t");
+  float back = 0;
+  CHECK(hil_frame_decode(frame, &back) == 1 && back == 1.0f, "frame round-trips through decode");
 
   hil_frame_encode(6790.5f, frame);
-  memcpy(back.bytes, &frame[1], HIL_FLOAT_BYTES);
-  CHECK(back.single == 6790.5f && frame[0] == 'H' && frame[5] == '\0',
+  CHECK(hil_frame_decode(frame, &back) == 1 && back == 6790.5f,
         "firmware first-step output 6790.5 N frames correctly");
+
+  /* Corruption is detected instead of being fed to the plant as a valid float. */
+  for (int i = 0; i < HIL_FRAME_BYTES; i++) {
+    uint8_t corrupt[HIL_FRAME_BYTES];
+    memcpy(corrupt, frame, sizeof corrupt);
+    corrupt[i] ^= 0x01;
+    if (hil_frame_decode(corrupt, &back) != 0) { printf("FAIL: byte %d flip accepted\n", i); fails++; }
+  }
+  CHECK(1, "single-bit corruption of any frame byte is rejected");
+
+  hil_frame_encode(6790.5f, frame);
+  CHECK(hil_float_decode(&frame[HIL_PAYLOAD_OFFSET]) == 6790.5f,
+        "payload decodes with explicit little-endian shifts");
+
+  uint8_t le[HIL_FLOAT_BYTES];
+  hil_float_encode(-1.5f, le);
+  CHECK(le[0] == 0x00 && le[1] == 0x00 && le[2] == 0xC0 && le[3] == 0xBF,
+        "-1.5f serialises to 00 00 C0 BF regardless of host byte order");
 
   /* --- hil_write_all / hil_read_all over a pipe ------------------------------ */
   int p[2];
@@ -42,9 +61,9 @@ int main(void)
   CHECK(hil_read_all(p[0], rx, HIL_FRAME_BYTES) == 1, "read_all returns 1 after a full frame");
   CHECK(memcmp(rx, frame, HIL_FRAME_BYTES) == 0, "bytes received == bytes sent");
 
-  /* Short reads: producer writes the frame in two chunks, consumer asks for all 6. */
-  CHECK(hil_write_all(p[1], frame, 2) == 0 && hil_write_all(p[1], frame + 2, 4) == 0,
-        "producer writes 2 + 4 bytes");
+  /* Short reads: producer writes the frame in two chunks, consumer asks for all of it. */
+  CHECK(hil_write_all(p[1], frame, 2) == 0 && hil_write_all(p[1], frame + 2, HIL_FRAME_BYTES - 2) == 0,
+        "producer writes the frame in two chunks");
   memset(rx, 0, sizeof rx);
   CHECK(hil_read_all(p[0], rx, HIL_FRAME_BYTES) == 1 && memcmp(rx, frame, HIL_FRAME_BYTES) == 0,
         "read_all reassembles a frame delivered in two chunks");

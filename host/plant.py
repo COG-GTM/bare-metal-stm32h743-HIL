@@ -7,7 +7,7 @@ firmware) on the slave side, and exchanges bytes with it using exactly the
 protocol the STM32 firmware speaks:
 
     plant -> controller : float32 TAS (4 bytes, little endian)
-    controller -> plant : b'H' + float32 thrust (4 bytes) + b'\\0'
+    controller -> plant : b'H' + float32 thrust (4 bytes) + CRC-8 + b'\\0'
 
 Plant (from Simulink/param_init.m, level flight, lift = weight):
     alpha = (2 M g / (rho V^2 S) - Cl0) / Cla
@@ -75,16 +75,29 @@ def read_exact(fd, n):
     return buf
 
 
+def crc8(data):
+    """CRC-8/ATM (poly 0x07, init 0x00), as in include/hil_protocol.h."""
+    crc = 0
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x07) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+    return crc
+
+
 def recv_frame(fd):
-    """Sync on header 'H', return float32 payload, expect '\\0' terminator."""
+    """Sync on header 'H', return float32 payload, check CRC-8 and '\\0' terminator."""
     while True:
         b = read_exact(fd, 1)
         if b == b"H":
             break
     payload = read_exact(fd, 4)
+    crc = read_exact(fd, 1)[0]
     term = read_exact(fd, 1)
     if term != b"\0":
         raise ValueError("bad terminator %r" % term)
+    if crc != crc8(b"H" + payload):
+        raise ValueError("bad CRC 0x%02X for payload %r" % (crc, payload))
     return struct.unpack("<f", payload)[0]
 
 

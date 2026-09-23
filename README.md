@@ -94,26 +94,27 @@ void UART_rcv_blocking(uint8_t* byte)
 
 The blocking mode allows us to make sure that the transmit register is empty before writing into it (for sending to Simulink) and that the read register is non empty before reading it (to get data from Simulink).
 
-Since the data have to be sent/received byte per byte as per the UART protocole (8 bits at a time), and since we want to manipulate objects with type `float` (4 bytes), we define the following union type: 
+Since the data have to be sent/received byte per byte as per the UART protocole (8 bits at a time), and since we want to manipulate objects with type `float` (4 bytes), `include/hil_protocol.h` converts between a `float` and its 4 wire bytes with explicit shifts, least significant byte first, so the byte order on the wire is the same whatever the byte order of the machine the code is compiled for:
 ```C
-typedef union {  // allows us to store different data types in the same memory location
-  float single;
-  uint8_t bytes[4];
-} custom_float_t;
+static inline float hil_float_decode(const uint8_t in[4])
+{
+  uint32_t bits = 0;
+  float value;
+  for (int i = 0; i < 4; i++) bits |= (uint32_t)in[i] << (8 * i);
+  memcpy(&value, &bits, sizeof value);
+  return value;
+}
 ```
 
-That way we can store / access the data byte per byte when we receive / send, or 4 bytes at a time when we use the object inside the code. For example, when receiving data, we use: 
+For example, when receiving data, we use: 
 ```C
-custom_float_t rcv;
+uint8_t rcv[4];
 // Reception from Simulink
 for (int i=0; i<4; i++)  // 1 float = 4 bytes
 {
-    UART_rcv_blocking(&rcv.bytes[i]);  // receive in blocking mode, 1 byte at a time (= uint8_t)
+    UART_rcv_blocking(&rcv[i]);  // receive in blocking mode, 1 byte at a time (= uint8_t)
 }
-```
-which allows us to store the data byte per byte as they are received into the union type variable `rcv`. Then, we can store the 4 bytes of data at a time into a variable with `float` type as follows
-```C
-float TAS = rcv.single;  // store the 4 bytes as a float
+float TAS = hil_float_decode(rcv);  // interpret the 4 bytes as a float
 ```
 
 Once the true airspeed of the aircraft is received and stored in a variable, a PID controller is implemented, computing a control law $u_k$ of the form: 
@@ -122,7 +123,10 @@ $$ u_k = k_p (v_k^* - v_k) + k_i \sum_{i=0}^k (v_i^* - v_i) d + k_d (v_{k-1} - v
 
 where $v_k$, $v_k^*$ are the TAS and reference TAS at step $k$, $k_p$, $k_i$, $k_d$ are PID gains, and $d$ is the time step. 
 
-When sending data back to Simulink, note that a header (`'A'`) and a terminator (`'\0'`) character should be prepended and appended to the data sent in order to improve the robustness of the data exchange, allowing Simulink to synchronise with the data sent by the microcontroller. 
+When sending data back to Simulink, note that a header (`'A'`) and a terminator (`'\0'`) character should be prepended and appended to the data sent in order to improve the robustness of the data exchange, allowing Simulink to synchronise with the data sent by the microcontroller. A header and a terminator only delimit a message: they cannot tell a corrupted payload from a valid one, so `hil_frame_encode()` also appends a CRC-8 byte (polynomial `0x07`, init `0x00`) over the header and the 4 payload bytes, and the receiver drops any frame whose CRC does not match:
+```
+'H' | b0 | b1 | b2 | b3 | CRC-8 | '\0'
+```
 
 
 
@@ -149,8 +153,7 @@ We now detail the configuration of all blocks
 Acquire data from the chip. Configuration: 
 * **COM port name:** specify the name of the COM port associated with the device (in my setup it was `/dev/cu.usbserial-14201` but yours will certainly have a different name).  
 * **Header and terminator:** add header (`'A'`) and terminator (`'\0'`) characters. This allows Simulink to know when a message starts and ends and prevent synchronisation issues. 
-*  **Data type:** set to `single` (4 bytes) as we receive a `float` from the microcontroller (both types are equivalent).  
-* **Data size:** the data size is set to `[1 1]` as we send 1  `single` / `float` (change it to `[1 N]` if N `single` / `float` are sent). 
+*  **Data type:** set to `uint8` and **data size** `[1 5]`: the frame carries the 4 payload bytes followed by the CRC-8 byte. Recompute the CRC over `['H' payload]` in a MATLAB Function block, drop the sample when it disagrees with the 5th byte, and cast the first 4 bytes to `single` (`typecast`) to recover the thrust command. 
 * **Enable blocking mode:** tick the box to receive in blocking mode.
 * **Block sample time:** set to 0.1s.
 

@@ -14,6 +14,14 @@ void pid_init(pid_ctrl_t *pid, float k_p, float k_i, float k_d, float d, float i
   pid->old_meas = init_meas;
 }
 
+void pid_set_period(pid_ctrl_t *pid, float d)
+{
+  if (d > 0.0f)
+  {
+    pid->d = d;
+  }
+}
+
 float pid_step(pid_ctrl_t *pid, float ref, float meas)
 {
   float err      = ref - meas;                       /* proportional action */

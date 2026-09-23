@@ -53,6 +53,9 @@ int _write(int handle, char* data, int size) {
 static void SystemClock_Config(void);
 static void LED_Init(void);
 static void UART_Init(void);
+static void CycleCounter_Init(void);
+static inline uint32_t cycle_count(void);
+static inline float elapsed_time(uint32_t, uint32_t);
 static inline void UART_send_blocking(uint8_t*);
 static inline void UART_rcv_blocking(uint8_t*);
 
@@ -68,15 +71,19 @@ int main(void)
   /* Initialize all configured peripherals */
   LED_Init();
   UART_Init();
+  CycleCounter_Init();
   
   /* Initialise variables */
   float TAS = 0;
   float ref_TAS = 80;
   float u = 0;
+  float d = HIL_SAMPLE_TIME_S;  // loop period [s], measured at every iteration
+  uint32_t t_old = 0;
+  int first_sample = 1;
   custom_float_t rcv;
   uint8_t frame[HIL_FRAME_BYTES];
   pid_ctrl_t pid;
-  pid_init(&pid, 500.0f, 30.0f, 10.0f, 0.1f, 66.5f);
+  pid_init(&pid, 500.0f, 30.0f, 10.0f, HIL_SAMPLE_TIME_S, 66.5f);
   
   /* Infinite loop */ 
   while (1)
@@ -87,6 +94,23 @@ int main(void)
     	{
             UART_rcv_blocking(&rcv.bytes[i]);
     	}
+    	
+    	// Measure the actual loop period: the cadence is imposed by the host
+    	// (Simulink sample time + UART transfer time) and not by any on-target
+    	// timer, so the control law uses the elapsed time instead of a constant
+    	uint32_t t_new = cycle_count();
+    	if (first_sample)
+    	{
+    	    first_sample = 0;                      // no previous sample yet
+    	}
+    	else
+    	{
+    	    d = elapsed_time(t_old, t_new);
+    	    if (d < HIL_MIN_DT_S) { d = HIL_MIN_DT_S; }  // reject implausible
+    	    if (d > HIL_MAX_DT_S) { d = HIL_MAX_DT_S; }  // periods (counter wrap)
+    	    pid_set_period(&pid, d);
+    	}
+    	t_old = t_new;
     	                   
     	// Controller (PID)
     	TAS = rcv.single;                          // get true airspeed (TAS)
@@ -159,8 +183,8 @@ static void UART_Init(void)
   GPIOB->AFR[1]  |=   (0xEUL << 16U); // AFR12[3:0] <- 0x1110 to set PB12 as AFR14 (UART5)
   
   // Set baudrate (oversampling by 16)
-  uint16_t uartdiv = 120000000 / 38400;  
-  //uartdiv = 64000000 / 38400;  // uncomment if HSI (default clock) is used
+  uint16_t uartdiv = HIL_UART_KERNEL_CLK / HIL_UART_BAUDRATE;  
+  //uartdiv = 64000000 / HIL_UART_BAUDRATE;  // uncomment if HSI (default clock) is used
   UART5->BRR = uartdiv;
   
   
@@ -288,6 +312,33 @@ static void SystemClock_Config(void)
 	SystemD2Clock = (480000000 >> ((D1CorePrescTable[(RCC->D1CFGR & RCC_D1CFGR_HPRE)
 	                                                   >> RCC_D1CFGR_HPRE_Pos]) & 0x1FU));
 	SystemCoreClock = 480000000;
+}
+
+/**
+  * Enable the DWT cycle counter used to measure the actual loop period
+  */
+static void CycleCounter_Init(void)
+{
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->LAR    = 0xC5ACCE55;  // unlock the DWT registers (Cortex-M7)
+  DWT->CYCCNT = 0;
+  DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+/**
+  * Read the free running CPU cycle counter
+  */
+static inline uint32_t cycle_count(void)
+{
+  return DWT->CYCCNT;
+}
+
+/**
+  * Time [s] elapsed between two cycle counts (wrap-around safe)
+  */
+static inline float elapsed_time(uint32_t t_old, uint32_t t_new)
+{
+  return (float)(t_new - t_old)/(float)SystemCoreClock;
 }
 
 /**

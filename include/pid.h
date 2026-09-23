@@ -20,6 +20,13 @@ typedef struct {
 } pid_ctrl_t;
 
 void  pid_init(pid_ctrl_t *pid, float k_p, float k_i, float k_d, float d, float init_meas);
+
+/* Set the sample period used by the integral and derivative actions. The loop
+ * cadence is imposed by the host, so the caller measures the elapsed time and
+ * updates it at every step instead of relying on the nominal period. A
+ * non-positive period is ignored. */
+void  pid_set_period(pid_ctrl_t *pid, float d);
+
 float pid_step(pid_ctrl_t *pid, float ref, float meas);
 
 #endif /* PID_H */

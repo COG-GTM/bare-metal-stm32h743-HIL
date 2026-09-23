@@ -41,6 +41,17 @@ extern "C" {
 // Bit fields
 #define GPIOA1  (1UL <<  1)
 
+/* HIL timing configuration ---------------------------------------------------
+ * The loop cadence is imposed by the host: the Simulink model sends one sample
+ * every HIL_SAMPLE_TIME_S over UART5 at HIL_UART_BAUDRATE. Keep these values in
+ * sync with the Simulink serial blocks (sample time and baud rate).
+ */
+#define HIL_UART_BAUDRATE     38400UL   // UART5 baud rate, must match Simulink
+#define HIL_UART_KERNEL_CLK   120000000UL  // UART5 kernel clock (pclk1)
+#define HIL_SAMPLE_TIME_S     0.1f      // nominal Simulink block sample time [s]
+#define HIL_MIN_DT_S          (HIL_SAMPLE_TIME_S / 10.0f)  // dt sanity bounds
+#define HIL_MAX_DT_S          (HIL_SAMPLE_TIME_S * 10.0f)
+
 
 #ifdef __cplusplus
 }

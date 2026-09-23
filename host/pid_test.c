@@ -31,6 +31,23 @@ int main(void)
   /* err=13.5, sum=1.35, diff=0 -> 500*13.5 + 30*1.35 = 6790.5 */
   CHECK(NEAR(u, 6790.5f, 1e-2f), "firmware gains first step = 6790.5 N");
 
+  /* Measured period: the I and D actions follow the period set at run time,
+     so a loop running at half the nominal cadence must not integrate or
+     differentiate as if it were running at 0.1 s */
+  pid_init(&pid, 0.0f, 0.0f, 1.0f, 0.1f, 66.5f);
+  pid_set_period(&pid, 0.05f);
+  CHECK(NEAR(pid_step(&pid, 0.0f, 67.5f), -20.0f, 1e-4f), "D term uses the measured period: (66.5-67.5)/0.05 = -20");
+
+  pid_init(&pid, 0.0f, 1.0f, 0.0f, 0.1f, 0.0f);
+  pid_set_period(&pid, 0.05f);
+  pid_step(&pid, 1.0f, 0.0f);
+  CHECK(NEAR(pid_step(&pid, 1.0f, 0.0f), 0.1f, 1e-5f), "I term uses the measured period: two steps of e=1, d=0.05 -> 0.1");
+
+  /* A non-positive measurement keeps the last valid period */
+  pid_init(&pid, 0.0f, 1.0f, 0.0f, 0.1f, 0.0f);
+  pid_set_period(&pid, 0.0f);
+  CHECK(NEAR(pid_step(&pid, 1.0f, 0.0f), 0.1f, 1e-5f), "non-positive period ignored, keeps d=0.1");
+
   /* Zero error, steady state: output equals integral memory only */
   pid_init(&pid, 500.0f, 30.0f, 10.0f, 0.1f, 80.0f);
   CHECK(NEAR(pid_step(&pid, 80.0f, 80.0f), 0.0f, 1e-5f), "zero error, zero history -> 0");

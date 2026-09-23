@@ -107,7 +107,9 @@ $(TARGET).bin: $(TARGET).elf
 HOST_CC ?= gcc
 HOST_CFLAGS = -Wall -Wextra -std=c99 -O2 -I./include -I./host
 HOST_BIN = host/pid_node
-HOST_TESTS = host/pid_test host/hil_test
+HOST_TESTS = host/pid_test host/hil_test host/cmsis_test
+# The CMSIS test pulls in the device/core headers, which are not host-clean.
+HOST_CMSIS_CFLAGS = $(HOST_CFLAGS) -I./drivers -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast
 
 .PHONY: host
 host: $(HOST_BIN) $(HOST_TESTS)
@@ -121,10 +123,14 @@ host/pid_test: host/pid_test.c src/pid.c include/pid.h
 host/hil_test: host/hil_test.c host/hil_io.c host/hil_io.h include/hil_protocol.h
 	$(HOST_CC) $(HOST_CFLAGS) host/hil_test.c host/hil_io.c -o $@
 
+host/cmsis_test: host/cmsis_test.c host/cmsis_host_shim.c host/cmsis_host_shim.h src/system_stm32h7xx.c include/system_stm32h7xx.h
+	$(HOST_CC) $(HOST_CMSIS_CFLAGS) host/cmsis_test.c host/cmsis_host_shim.c -o $@ -lm
+
 .PHONY: test
 test: $(HOST_TESTS)
 	./host/pid_test
 	./host/hil_test
+	./host/cmsis_test
 
 .PHONY: hil
 hil: $(HOST_BIN)

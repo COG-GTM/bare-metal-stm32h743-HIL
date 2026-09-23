@@ -59,6 +59,9 @@ This project does not rely on HAL libraries and the code can be built and flashe
 * C
 * [Matlab / Simulink R2021b](https://uk.mathworks.com/products/matlab.html)
 
+### Software HIL (no hardware needed)
+The PID control law (`src/pid.c`) and UART protocol (`include/hil_protocol.h`) are compiled unchanged for the host and closed against a Python replica of the Simulink plant over a pseudo-terminal: `make host test hil`. The firmware ELF can also be run on Renode's STM32H743 model. See [docs/software_hil.md](docs/software_hil.md).
+
 ### Detailed description
 The software consists of two parts: the program running on the microcontroller (stm32h743) and the Simulink model for the simulator. 
 

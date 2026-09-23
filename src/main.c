@@ -30,33 +30,12 @@
 #include <stdint.h>
 
 
-// Uncomment this if you want to use the printf function (for debug purpose)
-/*
-#include <stdio.h>   // to use the printf function
-#include <string.h>  // to use strings 
-
-// Override the 'write' clib method to implement 'printf' over UART.
-int _write(int handle, char* data, int size) {
-  int count = size;
-  
-  // invariant: data[0:i] have been added to TDR register  
-  while(count--) {
-      while(!(UART5->ISR & USART_ISR_TXE_TXFNF)) {}; // wait for empty transmit register
-      UART5->TDR = *data++; 
-  
-  }
-  return size;
-}
-*/
-
 /* Private function prototypes -----------------------------------------------*/
 static void SystemClock_Config(void);
 static void LED_Init(void);
 static void UART_Init(void);
-static inline void toggle_LED(void);
 static inline void UART_send_blocking(uint8_t*);
 static inline void UART_rcv_blocking(uint8_t*);
-static inline void delay(int comp); 
 
 /**
   * The application entry point.
@@ -297,25 +276,6 @@ static void SystemClock_Config(void)
 	SystemD2Clock = (480000000 >> ((D1CorePrescTable[(RCC->D1CFGR & RCC_D1CFGR_HPRE)
 	                                                   >> RCC_D1CFGR_HPRE_Pos]) & 0x1FU));
 	SystemCoreClock = 480000000;
-}
-
-/**
-  * Flash the D2 LED
-  */
-static inline void toggle_LED(void)
-{
-	GPIOA->ODR &= ~GPIOA1;  // pull down (clear) => ON
-    delay(30000000);
-    GPIOA->ODR |=  GPIOA1;  // pull up (set) => OFF
-    delay(30000000);
-}
-
-/**
-  * Simulate a time delay 
-  */
-static inline void delay(int comp)
-{
-for(int i=0; i < comp; i++){__asm__("nop");}
 }
 
 /**

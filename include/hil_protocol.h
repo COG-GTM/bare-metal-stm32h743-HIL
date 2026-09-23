@@ -4,14 +4,14 @@
  *               plant model and the host software-HIL harness.
  *
  *   plant  -> controller : 4 bytes  = float32 TAS (little endian)
- *   controller -> plant  : 'H' + 4 bytes float32 thrust + '\0'
+ *   controller -> plant  : 'A' + 4 bytes float32 thrust + '\0'
 ===============================================================================*/
 #ifndef HIL_PROTOCOL_H
 #define HIL_PROTOCOL_H
 
 #include <stdint.h>
 
-#define HIL_HEADER      'H'
+#define HIL_HEADER      'A'
 #define HIL_TERMINATOR  '\0'
 #define HIL_FLOAT_BYTES 4
 

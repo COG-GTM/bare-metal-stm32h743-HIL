@@ -7,7 +7,7 @@ firmware) on the slave side, and exchanges bytes with it using exactly the
 protocol the STM32 firmware speaks:
 
     plant -> controller : float32 TAS (4 bytes, little endian)
-    controller -> plant : b'H' + float32 thrust (4 bytes) + b'\\0'
+    controller -> plant : b'A' + float32 thrust (4 bytes) + b'\\0'
 
 Plant (from Simulink/param_init.m, level flight, lift = weight):
     alpha = (2 M g / (rho V^2 S) - Cl0) / Cla
@@ -76,10 +76,10 @@ def read_exact(fd, n):
 
 
 def recv_frame(fd):
-    """Sync on header 'H', return float32 payload, expect '\\0' terminator."""
+    """Sync on header 'A', return float32 payload, expect '\\0' terminator."""
     while True:
         b = read_exact(fd, 1)
-        if b == b"H":
+        if b == b"A":
             break
     payload = read_exact(fd, 4)
     term = read_exact(fd, 1)

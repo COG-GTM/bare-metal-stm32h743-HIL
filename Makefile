@@ -105,25 +105,26 @@ $(TARGET).bin: $(TARGET).elf
 # closed against a Python aircraft plant over a pseudo-terminal.
 # ---------------------------------------------------------------------------
 HOST_CC ?= gcc
-HOST_CFLAGS = -Wall -Wextra -std=c99 -O2 -I./include
+HOST_CFLAGS = -Wall -Wextra -std=c99 -O2 -I./include -I./host
 HOST_BIN = host/pid_node
+HOST_TESTS = host/pid_test host/hil_test
 
 .PHONY: host
-host: $(HOST_BIN) host/pid_test host/protocol_test
+host: $(HOST_BIN) $(HOST_TESTS)
 
-$(HOST_BIN): host/pid_node.c src/pid.c include/pid.h include/hil_protocol.h
-	$(HOST_CC) $(HOST_CFLAGS) host/pid_node.c src/pid.c -o $@
+$(HOST_BIN): host/pid_node.c host/hil_io.c host/hil_io.h src/pid.c include/pid.h include/hil_protocol.h
+	$(HOST_CC) $(HOST_CFLAGS) host/pid_node.c host/hil_io.c src/pid.c -o $@
 
 host/pid_test: host/pid_test.c src/pid.c include/pid.h
 	$(HOST_CC) $(HOST_CFLAGS) host/pid_test.c src/pid.c -o $@ -lm
 
-host/protocol_test: host/protocol_test.c include/hil_protocol.h
-	$(HOST_CC) $(HOST_CFLAGS) host/protocol_test.c -o $@
+host/hil_test: host/hil_test.c host/hil_io.c host/hil_io.h include/hil_protocol.h
+	$(HOST_CC) $(HOST_CFLAGS) host/hil_test.c host/hil_io.c -o $@
 
 .PHONY: test
-test: host/pid_test host/protocol_test
+test: $(HOST_TESTS)
 	./host/pid_test
-	./host/protocol_test
+	./host/hil_test
 
 .PHONY: hil
 hil: $(HOST_BIN)
@@ -140,4 +141,4 @@ clean:
 	rm -f $(TARGET).elf
 	rm -f $(TARGET).bin
 	rm -f $(TARGET).map
-	rm -f $(HOST_BIN) host/pid_test host/protocol_test
+	rm -f $(HOST_BIN) $(HOST_TESTS)

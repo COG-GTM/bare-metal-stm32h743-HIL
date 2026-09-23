@@ -14,11 +14,24 @@
 #define HIL_HEADER      'H'
 #define HIL_TERMINATOR  '\0'
 #define HIL_FLOAT_BYTES 4
+#define HIL_FRAME_BYTES (1 + HIL_FLOAT_BYTES + 1)
 
 typedef union {
   float single;
   uint8_t bytes[HIL_FLOAT_BYTES];
 } custom_float_t;
+
+/* Serialise one frame: HIL_HEADER, float32, HIL_TERMINATOR. */
+static inline void hil_frame_encode(float value, uint8_t out[HIL_FRAME_BYTES])
+{
+  custom_float_t f;
+  f.single = value;
+  out[0] = HIL_HEADER;
+  for (int i = 0; i < HIL_FLOAT_BYTES; i++) {
+    out[1 + i] = f.bytes[i];
+  }
+  out[HIL_FRAME_BYTES - 1] = HIL_TERMINATOR;
+}
 
 /* Receiver state machine. Both directions are framed so that a byte lost or
    added on the line costs a single sample: without a marker to re-anchor on,

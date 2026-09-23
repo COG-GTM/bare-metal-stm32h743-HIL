@@ -103,8 +103,9 @@ host / emulated target / (and by construction) hardware.
 - `include/hil_protocol.h` — `custom_float_t` union, header/terminator, payload size and
   `hil_rx_push()`, which discards bytes until a header and rejects a frame whose terminator
   is missing, so a lost byte costs one sample instead of desynchronising the stream.
-- `host/protocol_test.c` — host unit tests for the framing and resynchronisation (`make test`).
-  `host/plant.py --drop-byte-at <t>` drops a byte on the wire end to end.
+- `host/hil_test.c` — host unit tests for the framing, the receive resynchronisation and the
+  blocking I/O helpers (`make test`). `host/plant.py --drop-byte-at <t>` drops a byte on the
+  wire end to end.
 - `host/pid_node.c` — the firmware main loop with `UART_send_blocking`/`UART_rcv_blocking`
   reimplemented on a file descriptor. Takes an optional setpoint step
   (`ref step_ref step_sample`) so the harness can command a step without changing the protocol.

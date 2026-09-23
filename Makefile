@@ -21,6 +21,10 @@ OC  = $(TOOLCHAIN)/arm-none-eabi-objcopy
 OD  = $(TOOLCHAIN)/arm-none-eabi-objdump
 OS  = $(TOOLCHAIN)/arm-none-eabi-size
 
+# Host toolchain (unit tests of the hardware independent code)
+HOST_CC = gcc
+HOST_CFLAGS = -Wall -Wextra -std=c99 -g
+
 # Assembly directives.
 ASFLAGS += -mcpu=$(MCU_SPEC)
 ASFLAGS += -mthumb
@@ -70,6 +74,7 @@ LFLAGS += -T$(LSCRIPT)
 # Source files.
 AS_SRC    = ./startup/startup_stm32h743vitx.s
 C_SRC   = ./src/main.c
+C_SRC  += ./src/pid.c
 C_SRC  += ./src/system_stm32h7xx.c
 
 INCLUDE  += -I./include
@@ -104,9 +109,15 @@ flash: all
 	st-flash erase 
 	st-flash write ./$(TARGET).bin 0x08000000 
 
+.PHONY: test
+test:
+	$(HOST_CC) $(HOST_CFLAGS) -I./include ./src/pid.c ./test/test_pid.c -lm -o ./test_pid
+	./test_pid
+
 .PHONY: clean
 clean:
 	rm -f $(OBJS)
 	rm -f $(TARGET).elf
 	rm -f $(TARGET).bin
 	rm -f $(TARGET).map
+	rm -f ./test_pid

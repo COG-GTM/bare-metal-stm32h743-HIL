@@ -119,6 +119,14 @@ $$ u_k = k_p (v_k^* - v_k) + k_i \sum_{i=0}^k (v_i^* - v_i) d + k_d (v_{k-1} - v
 
 where $v_k$, $v_k^*$ are the TAS and reference TAS at step $k$, $k_p$, $k_i$, $k_d$ are PID gains, and $d$ is the time step. 
 
+The loop is paced by the host: the target blocks on the UART until Simulink sends the next sample, so the real period is the Simulink block sample time plus the UART transfer time, and it is not enforced by any on-target timer. The time step $d$ is therefore *measured* at every iteration with the DWT cycle counter (`CycleCounter_Init`, `cycle_count`, `elapsed_time` in `src/main.c`) and passed to the control law, so the integral and derivative actions stay consistent with the actual cadence if the sample time, the baud rate or the processing load changes. The measured value is clamped to `[HIL_MIN_DT_S, HIL_MAX_DT_S]` to reject implausible periods (e.g. a counter wrap after ~8.9s at 480MHz). The nominal sample time, the baud rate and those bounds are defined together in `include/main.h` (`HIL_SAMPLE_TIME_S`, `HIL_UART_BAUDRATE`) and must be kept in sync with the Simulink blocks.
+
+The control law itself lives in `src/pid.c` / `include/pid.h`, independently of the hardware, and is covered by host-side unit tests (no board required):
+
+```sh
+make test
+```
+
 When sending data back to Simulink, note that a header (`'A'`) and a terminator (`'\0'`) character should be prepended and appended to the data sent in order to improve the robustness of the data exchange, allowing Simulink to synchronise with the data sent by the microcontroller. 
 
 

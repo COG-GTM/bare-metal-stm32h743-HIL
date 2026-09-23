@@ -25,6 +25,8 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "pid.h"
+#include "hil_protocol.h"
 #include <stdint.h>
 
 
@@ -46,16 +48,6 @@ int _write(int handle, char* data, int size) {
   return size;
 }
 */
-
-/* Custom types --------------------------------------------------------------*/
-typedef union {
-  float single;
-  uint8_t bytes[4];
-} custom_float_t;
-
-/* Framing markers -----------------------------------------------------------*/
-#define FRAME_HEADER      'H'   // header for synchronisation
-#define FRAME_TERMINATOR  '\0'  // terminator for synchronisation
 
 /* Private function prototypes -----------------------------------------------*/
 static void SystemClock_Config(void);
@@ -84,17 +76,11 @@ int main(void)
   /* Initialise variables */
   float TAS = 0;
   float ref_TAS = 80;
-  float k_p = 500; 
-  float k_i = 30;
-  float k_d = 10; 
   float u = 0;
-  float err = 0;
-  float sum_err = 0;
-  float diff_err = 0.0;
-  float old_TAS = 66.5; 
-  float d = 0.1; 
   custom_float_t rcv;
   custom_float_t snd;
+  pid_ctrl_t pid;
+  pid_init(&pid, 500.0f, 30.0f, 10.0f, 0.1f, 66.5f);
   
   /* Infinite loop */ 
   while (1)
@@ -105,11 +91,7 @@ int main(void)
     	                   
     	// Controller (PID)
     	TAS = rcv.single;                          // get true airspeed (TAS)
-    	err = ref_TAS-TAS;                         // proportional action
-    	diff_err = (old_TAS-TAS)/d;                // derivative action 
-    	sum_err += err*d;                          // integral action 
-    	u = k_p*err + k_i*sum_err + k_d*diff_err;  // control law
-    	old_TAS = TAS;                           
+    	u = pid_step(&pid, ref_TAS, TAS);          // control law
     	snd.single = u; 
     	
     	// Transmission to Simulink
@@ -347,40 +329,18 @@ static inline void UART_rcv_blocking(uint8_t* byte)
 }
 
 /**
-  * Receive a framed float (header + 4 payload bytes + terminator) in blocking mode.
-  * Bytes are discarded until a header is found and a frame with a wrong terminator is
-  * rejected, so a byte lost on the line costs a single sample instead of misaligning
-  * the decoding of every subsequent one.
+  * Receive a framed float (header + 4 payload bytes + terminator) in blocking mode
   */
 static void UART_rcv_float_blocking(custom_float_t* value)
 {
-    custom_float_t frame;
+    hil_rx_t rx;
     uint8_t byte = 0;
-    int at_header = 0;  // header of the next frame already consumed
 
-    while (1)
+    hil_rx_init(&rx);
+    do
     {
-        if (!at_header)
-        {
-            UART_rcv_blocking(&byte);
-            if (byte != FRAME_HEADER) { continue; }
-        }
-        at_header = 0;
-
-        for (int i=0; i<4; i++)
-        {
-            UART_rcv_blocking(&frame.bytes[i]);
-        }
-
         UART_rcv_blocking(&byte);
-        if (byte == FRAME_TERMINATOR)
-        {
-            *value = frame;
-            return;
-        }
-
-        at_header = (byte == FRAME_HEADER);  // that byte may start the next frame
-    }
+    } while (!hil_rx_push(&rx, byte, value));
 }
 
 /**
@@ -388,14 +348,14 @@ static void UART_rcv_float_blocking(custom_float_t* value)
   */
 static void UART_send_float_blocking(custom_float_t* value)
 {
-    uint8_t ch = FRAME_HEADER;
+    uint8_t ch = HIL_HEADER;
     UART_send_blocking(&ch);
 
-    for (int i=0; i<4; i++)
+    for (int i=0; i<HIL_FLOAT_BYTES; i++)
     {
         UART_send_blocking(&value->bytes[i]);
     }
 
-    ch = FRAME_TERMINATOR;
+    ch = HIL_TERMINATOR;
     UART_send_blocking(&ch);
 }

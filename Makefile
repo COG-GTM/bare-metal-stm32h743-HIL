@@ -12,7 +12,8 @@ MCU_SPEC = cortex-m7
 # Define the chip architecture.
 LD_SCRIPT = STM32H743VITX_FLASH.ld
 
-TOOLCHAIN = /opt/gcc-arm/bin
+# Toolchain: use /opt/gcc-arm/bin if present, otherwise whatever is on PATH.
+TOOLCHAIN ?= $(if $(wildcard /opt/gcc-arm/bin/arm-none-eabi-gcc),/opt/gcc-arm/bin,$(dir $(shell which arm-none-eabi-gcc)))
 CC  = $(TOOLCHAIN)/arm-none-eabi-gcc
 CPP = $(TOOLCHAIN)/arm-none-eabi-g++
 AS  = $(TOOLCHAIN)/arm-none-eabi-as
@@ -70,9 +71,9 @@ LFLAGS += -T$(LSCRIPT)
 # Source files.
 AS_SRC    = ./startup/startup_stm32h743vitx.s
 C_SRC   = ./src/main.c
+C_SRC  += ./src/pid.c
 C_SRC  += ./src/system_stm32h7xx.c
 
-INCLUDE  += -I./include
 INCLUDE  += -I./include
 INCLUDE  += -I./drivers
 
@@ -99,6 +100,35 @@ $(TARGET).bin: $(TARGET).elf
 	$(OC) -S -O binary $< $@
 	$(OS) $<
 
+# ---------------------------------------------------------------------------
+# Host-side software HIL: the same src/pid.c compiled with the host gcc and
+# closed against a Python aircraft plant over a pseudo-terminal.
+# ---------------------------------------------------------------------------
+HOST_CC ?= gcc
+HOST_CFLAGS = -Wall -Wextra -std=c99 -O2 -I./include
+HOST_BIN = host/pid_node
+
+.PHONY: host
+host: $(HOST_BIN) host/pid_test host/protocol_test
+
+$(HOST_BIN): host/pid_node.c src/pid.c include/pid.h include/hil_protocol.h
+	$(HOST_CC) $(HOST_CFLAGS) host/pid_node.c src/pid.c -o $@
+
+host/pid_test: host/pid_test.c src/pid.c include/pid.h
+	$(HOST_CC) $(HOST_CFLAGS) host/pid_test.c src/pid.c -o $@ -lm
+
+host/protocol_test: host/protocol_test.c include/hil_protocol.h
+	$(HOST_CC) $(HOST_CFLAGS) host/protocol_test.c -o $@
+
+.PHONY: test
+test: host/pid_test host/protocol_test
+	./host/pid_test
+	./host/protocol_test
+
+.PHONY: hil
+hil: $(HOST_BIN)
+	python3 host/plant.py --controller ./$(HOST_BIN) --out host/results
+
 .PHONY: flash 
 flash: all
 	st-flash erase 
@@ -110,3 +140,4 @@ clean:
 	rm -f $(TARGET).elf
 	rm -f $(TARGET).bin
 	rm -f $(TARGET).map
+	rm -f $(HOST_BIN) host/pid_test host/protocol_test

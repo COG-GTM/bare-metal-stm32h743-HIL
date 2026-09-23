@@ -111,7 +111,7 @@ int main(void)
     	snd.single = u; 
     	
     	// Transmission to Simulink
-    	ch = 'H';                                  // header for synchronisation
+    	ch = 'A';                                  // header for synchronisation
         UART_send_blocking(&ch);
     	for (int i=0; i<4; i++)
     	{

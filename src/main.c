@@ -25,6 +25,8 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "pid.h"
+#include "hil_protocol.h"
 #include <stdint.h>
 
 
@@ -46,12 +48,6 @@ int _write(int handle, char* data, int size) {
   return size;
 }
 */
-
-/* Custom types --------------------------------------------------------------*/
-typedef union {
-  float single;
-  uint8_t bytes[4];
-} custom_float_t;
 
 /* Clock configuration constants ---------------------------------------------*/
 #define CLOCK_READY_TIMEOUT  1000000UL   // bounded retries for every ready poll
@@ -92,46 +88,36 @@ int main(void)
   /* Initialise variables */
   float TAS = 0;
   float ref_TAS = 80;
-  float k_p = 500; 
-  float k_i = 30;
-  float k_d = 10; 
   float u = 0;
-  float err = 0;
-  float sum_err = 0;
-  float diff_err = 0.0;
-  float old_TAS = 66.5; 
-  float d = 0.1; 
-  uint8_t ch = '\0';
+  uint8_t ch = HIL_TERMINATOR;
   custom_float_t rcv;
   custom_float_t snd;
+  pid_ctrl_t pid;
+  pid_init(&pid, 500.0f, 30.0f, 10.0f, 0.1f, 66.5f);
   
   /* Infinite loop */ 
   while (1)
   {
 
     	// Reception from Simulink
-    	for (int i=0; i<4; i++)
+    	for (int i=0; i<HIL_FLOAT_BYTES; i++)
     	{
             UART_rcv_blocking(&rcv.bytes[i]);
     	}
     	                   
     	// Controller (PID)
     	TAS = rcv.single;                          // get true airspeed (TAS)
-    	err = ref_TAS-TAS;                         // proportional action
-    	diff_err = (old_TAS-TAS)/d;                // derivative action 
-    	sum_err += err*d;                          // integral action 
-    	u = k_p*err + k_i*sum_err + k_d*diff_err;  // control law
-    	old_TAS = TAS;                           
+    	u = pid_step(&pid, ref_TAS, TAS);          // control law
     	snd.single = u; 
     	
     	// Transmission to Simulink
-    	ch = 'H';                                  // header for synchronisation
+    	ch = HIL_HEADER;                           // header for synchronisation
         UART_send_blocking(&ch);
-    	for (int i=0; i<4; i++)
+    	for (int i=0; i<HIL_FLOAT_BYTES; i++)
     	{
             UART_send_blocking(&snd.bytes[i]);
     	}
-    	ch = '\0';                                 // terminator for synchronisation
+    	ch = HIL_TERMINATOR;                       // terminator for synchronisation
         UART_send_blocking(&ch);
         
       

@@ -53,10 +53,8 @@ int _write(int handle, char* data, int size) {
 static void SystemClock_Config(void);
 static void LED_Init(void);
 static void UART_Init(void);
-static inline void toggle_LED(void);
 static inline void UART_send_blocking(uint8_t*);
 static inline void UART_rcv_blocking(uint8_t*);
-static inline void delay(int comp); 
 
 /**
   * The application entry point.
@@ -75,9 +73,8 @@ int main(void)
   float TAS = 0;
   float ref_TAS = 80;
   float u = 0;
-  uint8_t ch = HIL_TERMINATOR;
   custom_float_t rcv;
-  custom_float_t snd;
+  uint8_t frame[HIL_FRAME_BYTES];
   pid_ctrl_t pid;
   pid_init(&pid, 500.0f, 30.0f, 10.0f, 0.1f, 66.5f);
   
@@ -94,19 +91,13 @@ int main(void)
     	// Controller (PID)
     	TAS = rcv.single;                          // get true airspeed (TAS)
     	u = pid_step(&pid, ref_TAS, TAS);          // control law
-    	snd.single = u; 
     	
-    	// Transmission to Simulink
-    	ch = HIL_HEADER;                           // header for synchronisation
-        UART_send_blocking(&ch);
-    	for (int i=0; i<HIL_FLOAT_BYTES; i++)
+    	// Transmission to Simulink: header + float32 + terminator
+    	hil_frame_encode(u, frame);
+    	for (int i=0; i<HIL_FRAME_BYTES; i++)
     	{
-            UART_send_blocking(&snd.bytes[i]);
+            UART_send_blocking(&frame[i]);
     	}
-    	ch = HIL_TERMINATOR;                       // terminator for synchronisation
-        UART_send_blocking(&ch);
-        
-      
   }
 
 }
@@ -297,25 +288,6 @@ static void SystemClock_Config(void)
 	SystemD2Clock = (480000000 >> ((D1CorePrescTable[(RCC->D1CFGR & RCC_D1CFGR_HPRE)
 	                                                   >> RCC_D1CFGR_HPRE_Pos]) & 0x1FU));
 	SystemCoreClock = 480000000;
-}
-
-/**
-  * Flash the D2 LED
-  */
-static inline void toggle_LED(void)
-{
-	GPIOA->ODR &= ~GPIOA1;  // pull down (clear) => ON
-    delay(30000000);
-    GPIOA->ODR |=  GPIOA1;  // pull up (set) => OFF
-    delay(30000000);
-}
-
-/**
-  * Simulate a time delay 
-  */
-static inline void delay(int comp)
-{
-for(int i=0; i < comp; i++){__asm__("nop");}
 }
 
 /**

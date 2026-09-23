@@ -53,6 +53,10 @@ typedef union {
   uint8_t bytes[4];
 } custom_float_t;
 
+/* Framing markers -----------------------------------------------------------*/
+#define FRAME_HEADER      'H'   // header for synchronisation
+#define FRAME_TERMINATOR  '\0'  // terminator for synchronisation
+
 /* Private function prototypes -----------------------------------------------*/
 static void SystemClock_Config(void);
 static void LED_Init(void);
@@ -60,6 +64,8 @@ static void UART_Init(void);
 static inline void toggle_LED(void);
 static inline void UART_send_blocking(uint8_t*);
 static inline void UART_rcv_blocking(uint8_t*);
+static void UART_rcv_float_blocking(custom_float_t*);
+static void UART_send_float_blocking(custom_float_t*);
 static inline void delay(int comp); 
 
 /**
@@ -87,7 +93,6 @@ int main(void)
   float diff_err = 0.0;
   float old_TAS = 66.5; 
   float d = 0.1; 
-  uint8_t ch = '\0';
   custom_float_t rcv;
   custom_float_t snd;
   
@@ -96,10 +101,7 @@ int main(void)
   {
 
     	// Reception from Simulink
-    	for (int i=0; i<4; i++)
-    	{
-            UART_rcv_blocking(&rcv.bytes[i]);
-    	}
+    	UART_rcv_float_blocking(&rcv);
     	                   
     	// Controller (PID)
     	TAS = rcv.single;                          // get true airspeed (TAS)
@@ -111,14 +113,7 @@ int main(void)
     	snd.single = u; 
     	
     	// Transmission to Simulink
-    	ch = 'H';                                  // header for synchronisation
-        UART_send_blocking(&ch);
-    	for (int i=0; i<4; i++)
-    	{
-            UART_send_blocking(&snd.bytes[i]);
-    	}
-    	ch = '\0';                                 // terminator for synchronisation
-        UART_send_blocking(&ch);
+    	UART_send_float_blocking(&snd);
         
       
   }
@@ -349,4 +344,58 @@ static inline void UART_rcv_blocking(uint8_t* byte)
     while(!(UART5->ISR & USART_ISR_RXNE_RXFNE)){}; // wait for non empty read register
     *byte = UART5->RDR;
 
+}
+
+/**
+  * Receive a framed float (header + 4 payload bytes + terminator) in blocking mode.
+  * Bytes are discarded until a header is found and a frame with a wrong terminator is
+  * rejected, so a byte lost on the line costs a single sample instead of misaligning
+  * the decoding of every subsequent one.
+  */
+static void UART_rcv_float_blocking(custom_float_t* value)
+{
+    custom_float_t frame;
+    uint8_t byte = 0;
+    int at_header = 0;  // header of the next frame already consumed
+
+    while (1)
+    {
+        if (!at_header)
+        {
+            UART_rcv_blocking(&byte);
+            if (byte != FRAME_HEADER) { continue; }
+        }
+        at_header = 0;
+
+        for (int i=0; i<4; i++)
+        {
+            UART_rcv_blocking(&frame.bytes[i]);
+        }
+
+        UART_rcv_blocking(&byte);
+        if (byte == FRAME_TERMINATOR)
+        {
+            *value = frame;
+            return;
+        }
+
+        at_header = (byte == FRAME_HEADER);  // that byte may start the next frame
+    }
+}
+
+/**
+  * Send a framed float (header + 4 payload bytes + terminator) in blocking mode
+  */
+static void UART_send_float_blocking(custom_float_t* value)
+{
+    uint8_t ch = FRAME_HEADER;
+    UART_send_blocking(&ch);
+
+    for (int i=0; i<4; i++)
+    {
+        UART_send_blocking(&value->bytes[i]);
+    }
+
+    ch = FRAME_TERMINATOR;
+    UART_send_blocking(&ch);
 }

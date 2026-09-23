@@ -56,10 +56,8 @@ static void UART_Init(void);
 static void CycleCounter_Init(void);
 static inline uint32_t cycle_count(void);
 static inline float elapsed_time(uint32_t, uint32_t);
-static inline void toggle_LED(void);
 static inline void UART_send_blocking(uint8_t*);
 static inline void UART_rcv_blocking(uint8_t*);
-static inline void delay(int comp); 
 
 /**
   * The application entry point.
@@ -80,11 +78,10 @@ int main(void)
   float ref_TAS = 80;
   float u = 0;
   float d = HIL_SAMPLE_TIME_S;  // loop period [s], measured at every iteration
-  uint8_t ch = HIL_TERMINATOR;
   uint32_t t_old = 0;
   int first_sample = 1;
   custom_float_t rcv;
-  custom_float_t snd;
+  uint8_t frame[HIL_FRAME_BYTES];
   pid_ctrl_t pid;
   pid_init(&pid, 500.0f, 30.0f, 10.0f, HIL_SAMPLE_TIME_S, 66.5f);
   
@@ -118,19 +115,13 @@ int main(void)
     	// Controller (PID)
     	TAS = rcv.single;                          // get true airspeed (TAS)
     	u = pid_step(&pid, ref_TAS, TAS);          // control law
-    	snd.single = u; 
     	
-    	// Transmission to Simulink
-    	ch = HIL_HEADER;                           // header for synchronisation
-        UART_send_blocking(&ch);
-    	for (int i=0; i<HIL_FLOAT_BYTES; i++)
+    	// Transmission to Simulink: header + float32 + terminator
+    	hil_frame_encode(u, frame);
+    	for (int i=0; i<HIL_FRAME_BYTES; i++)
     	{
-            UART_send_blocking(&snd.bytes[i]);
+            UART_send_blocking(&frame[i]);
     	}
-    	ch = HIL_TERMINATOR;                       // terminator for synchronisation
-        UART_send_blocking(&ch);
-        
-      
   }
 
 }
@@ -348,25 +339,6 @@ static inline uint32_t cycle_count(void)
 static inline float elapsed_time(uint32_t t_old, uint32_t t_new)
 {
   return (float)(t_new - t_old)/(float)SystemCoreClock;
-}
-
-/**
-  * Flash the D2 LED
-  */
-static inline void toggle_LED(void)
-{
-	GPIOA->ODR &= ~GPIOA1;  // pull down (clear) => ON
-    delay(30000000);
-    GPIOA->ODR |=  GPIOA1;  // pull up (set) => OFF
-    delay(30000000);
-}
-
-/**
-  * Simulate a time delay 
-  */
-static inline void delay(int comp)
-{
-for(int i=0; i < comp; i++){__asm__("nop");}
 }
 
 /**

@@ -26,6 +26,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "pid.h"
+#include "hil_protocol.h"
 #include <stdint.h>
 
 
@@ -47,12 +48,6 @@ int _write(int handle, char* data, int size) {
   return size;
 }
 */
-
-/* Custom types --------------------------------------------------------------*/
-typedef union {
-  float single;
-  uint8_t bytes[4];
-} custom_float_t;
 
 /* Private function prototypes -----------------------------------------------*/
 static void SystemClock_Config(void);
@@ -82,22 +77,23 @@ int main(void)
   
   /* Initialise variables */
   float TAS = 0;
+  float ref_TAS = 80;
   float u = 0;
   float d = HIL_SAMPLE_TIME_S;  // loop period [s], measured at every iteration
-  uint8_t ch = '\0';
+  uint8_t ch = HIL_TERMINATOR;
   uint32_t t_old = 0;
   int first_sample = 1;
   custom_float_t rcv;
   custom_float_t snd;
-  pid_t pid;
-  pid_init(&pid, 500, 30, 10, 80, 66.5);
+  pid_ctrl_t pid;
+  pid_init(&pid, 500.0f, 30.0f, 10.0f, HIL_SAMPLE_TIME_S, 66.5f);
   
   /* Infinite loop */ 
   while (1)
   {
 
     	// Reception from Simulink
-    	for (int i=0; i<4; i++)
+    	for (int i=0; i<HIL_FLOAT_BYTES; i++)
     	{
             UART_rcv_blocking(&rcv.bytes[i]);
     	}
@@ -108,30 +104,30 @@ int main(void)
     	uint32_t t_new = cycle_count();
     	if (first_sample)
     	{
-    	    d = HIL_SAMPLE_TIME_S;                 // no previous sample yet
-    	    first_sample = 0;
+    	    first_sample = 0;                      // no previous sample yet
     	}
     	else
     	{
     	    d = elapsed_time(t_old, t_new);
     	    if (d < HIL_MIN_DT_S) { d = HIL_MIN_DT_S; }  // reject implausible
     	    if (d > HIL_MAX_DT_S) { d = HIL_MAX_DT_S; }  // periods (counter wrap)
+    	    pid_set_period(&pid, d);
     	}
     	t_old = t_new;
     	                   
     	// Controller (PID)
     	TAS = rcv.single;                          // get true airspeed (TAS)
-    	u = pid_update(&pid, TAS, d);              // control law
+    	u = pid_step(&pid, ref_TAS, TAS);          // control law
     	snd.single = u; 
     	
     	// Transmission to Simulink
-    	ch = 'H';                                  // header for synchronisation
+    	ch = HIL_HEADER;                           // header for synchronisation
         UART_send_blocking(&ch);
-    	for (int i=0; i<4; i++)
+    	for (int i=0; i<HIL_FLOAT_BYTES; i++)
     	{
             UART_send_blocking(&snd.bytes[i]);
     	}
-    	ch = '\0';                                 // terminator for synchronisation
+    	ch = HIL_TERMINATOR;                       // terminator for synchronisation
         UART_send_blocking(&ch);
         
       

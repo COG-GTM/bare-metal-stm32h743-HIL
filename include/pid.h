@@ -1,60 +1,32 @@
 /*==============================================================================
  * Name        : pid.h
- * Description : Discrete PID control law, independent of any hardware so that
- *               it can be unit tested on the host (see test/test_pid.c).
- -------------------------------------------------------------------------------
- * The MIT License (MIT)
- * Copyright (c) 2022 Martin Doff-Sotta
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Description : Discrete PID control law (hardware independent).
+ *
+ *   u_k = k_p e_k + k_i * sum_{i<=k} e_i d + k_d (v_{k-1} - v_k) / d
+ *
+ * This unit contains no HAL / register access so the exact same source is
+ * compiled for the Cortex-M7 target and for the host (software HIL, unit tests).
 ===============================================================================*/
-
-#ifndef __PID_H
-#define __PID_H
-
-#ifdef __cplusplus
-extern "C" {
-#endif
+#ifndef PID_H
+#define PID_H
 
 typedef struct {
-  float k_p;        // proportional gain
-  float k_i;        // integral gain
-  float k_d;        // derivative gain
-  float ref;        // setpoint
-  float sum_err;    // integral state
-  float prev_meas;  // previous measurement (derivative state)
-} pid_t;
+  float k_p;
+  float k_i;
+  float k_d;
+  float d;         /* sample period (s) */
+  float sum_err;   /* integral state */
+  float old_meas;  /* previous measurement, for derivative on measurement */
+} pid_ctrl_t;
 
-/**
-  * Initialise the controller state.
-  */
-void pid_init(pid_t* pid, float k_p, float k_i, float k_d, float ref,
-              float initial_meas);
+void  pid_init(pid_ctrl_t *pid, float k_p, float k_i, float k_d, float d, float init_meas);
 
-/**
-  * Compute the control law for a measurement sampled dt seconds after the
-  * previous one. dt is the measured loop period: passing the true elapsed time
-  * keeps the integral and derivative actions consistent with the real cadence.
-  * A non-positive dt leaves the states untouched and yields the proportional
-  * and integral actions only.
-  */
-float pid_update(pid_t* pid, float meas, float dt);
+/* Set the sample period used by the integral and derivative actions. The loop
+ * cadence is imposed by the host, so the caller measures the elapsed time and
+ * updates it at every step instead of relying on the nominal period. A
+ * non-positive period is ignored. */
+void  pid_set_period(pid_ctrl_t *pid, float d);
 
-#ifdef __cplusplus
-}
-#endif
+float pid_step(pid_ctrl_t *pid, float ref, float meas);
 
-#endif /* __PID_H */
+#endif /* PID_H */

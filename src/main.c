@@ -49,10 +49,34 @@ int _write(int handle, char* data, int size) {
 }
 */
 
+/* Private constants ---------------------------------------------------------*/
+
+// Spin budget for every RCC/PWR ready-bit poll. At the 64 MHz HSI clock that is
+// running out of reset this is well over 100 ms, i.e. orders of magnitude more
+// than the HSE start-up and PLL lock times.
+#define CLOCK_WAIT_ITERATIONS  1200000UL
+
+// UART5 kernel clock (rcc_pclk1) for each of the two clock configurations
+#define PCLK1_PLL1_HZ          120000000UL  // 480 MHz sys_ck, HPRE /2, D2PPRE1 /2
+#define PCLK1_HSI_HZ           64000000UL   // HSI fallback, all prescalers /1
+
+// IWDG: 32 kHz LSI, /256 prescaler, maximum reload -> ~32 s time-out
+#define IWDG_KEY_RELOAD        0x0000AAAAUL
+#define IWDG_KEY_ENABLE        0x00005555UL
+#define IWDG_KEY_START         0x0000CCCCUL
+#define IWDG_PRESCALER_256     0x6UL
+#define IWDG_RELOAD_MAX        0xFFFUL
+
 /* Private function prototypes -----------------------------------------------*/
-static void SystemClock_Config(void);
+static void IWDG_Init(void);
+static inline void IWDG_Refresh(void);
+static int wait_bit(volatile uint32_t*, uint32_t, uint32_t);
+static uint32_t SystemClock_Config(void);
+static uint32_t SystemClock_Fallback_HSI(void);
+static void Fault_Blink(uint32_t);
+static void Fault_Reset(void);
 static void LED_Init(void);
-static void UART_Init(void);
+static void UART_Init(uint32_t);
 static inline void UART_send_blocking(uint8_t*);
 static inline void UART_rcv_blocking(uint8_t*);
 
@@ -61,13 +85,24 @@ static inline void UART_rcv_blocking(uint8_t*);
   */
 int main(void)
 {
-  
-  /* Configure the system clock */
-  SystemClock_Config();
+
+  /* Arm the watchdog before touching the clock tree so that a fault the bounded
+     waits below cannot recover from still ends in a reset rather than a hang */
+  IWDG_Init();
+
+  /* Configure the system clock. Returns the resulting UART5 kernel clock: the
+     nominal 120 MHz, or the HSI fallback value if the HSE/PLL never came up */
+  uint32_t pclk1 = SystemClock_Config();
 
   /* Initialize all configured peripherals */
   LED_Init();
-  UART_Init();
+  UART_Init(pclk1);
+
+  /* Signal a degraded clock on the LED before entering the control loop */
+  if (pclk1 != PCLK1_PLL1_HZ)
+  {
+    Fault_Blink(6);
+  }
   
   /* Initialise variables */
   float TAS = 0;
@@ -98,6 +133,8 @@ int main(void)
     	{
             UART_send_blocking(&frame[i]);
     	}
+
+    	IWDG_Refresh();
   }
 
 }
@@ -127,7 +164,7 @@ static void LED_Init(void)
   * Configure UART5 peripherals
   * PB12: UART5_RX (receive), PB13: UART5_TX (transmit)
   */
-static void UART_Init(void)
+static void UART_Init(uint32_t pclk1)
 {
   
   // Enable peripheral clocks: GPIOB, UART5.
@@ -158,9 +195,8 @@ static void UART_Init(void)
   GPIOB->AFR[1]  &=  ~(0xFUL << 16U);
   GPIOB->AFR[1]  |=   (0xEUL << 16U); // AFR12[3:0] <- 0x1110 to set PB12 as AFR14 (UART5)
   
-  // Set baudrate (oversampling by 16)
-  uint16_t uartdiv = 120000000 / 38400;  
-  //uartdiv = 64000000 / 38400;  // uncomment if HSI (default clock) is used
+  // Set baudrate (oversampling by 16) from the actual UART5 kernel clock
+  uint16_t uartdiv = (uint16_t)(pclk1 / 38400U);
   UART5->BRR = uartdiv;
   
   
@@ -170,9 +206,106 @@ static void UART_Init(void)
 }
 
 /**
-  * System Clock Configuration
+  * Start the independent watchdog (~32 s time-out)
   */
-static void SystemClock_Config(void)
+static void IWDG_Init(void)
+{
+    IWDG1->KR  = IWDG_KEY_START;   // start the watchdog (and the LSI with it)
+    IWDG1->KR  = IWDG_KEY_ENABLE;  // unlock PR/RLR
+    IWDG1->PR  = IWDG_PRESCALER_256;
+    IWDG1->RLR = IWDG_RELOAD_MAX;
+    wait_bit(&IWDG1->SR, 0x7UL, 0x0UL);  // registers updated (bounded)
+    IWDG1->KR  = IWDG_KEY_RELOAD;
+}
+
+/**
+  * Kick the independent watchdog
+  */
+static inline void IWDG_Refresh(void)
+{
+    IWDG1->KR = IWDG_KEY_RELOAD;
+}
+
+/**
+  * Poll a register field until it reaches the expected value.
+  * Return 0 on success, -1 once the spin budget is exhausted.
+  */
+static int wait_bit(volatile uint32_t* reg, uint32_t mask, uint32_t expected)
+{
+    for (uint32_t i = 0; i < CLOCK_WAIT_ITERATIONS; i++)
+    {
+        if ((*reg & mask) == expected)
+        {
+            return 0;
+        }
+        __asm__("nop");
+    }
+    return -1;
+}
+
+/**
+  * Blink the fault LED on PA1 the requested number of times
+  */
+static void Fault_Blink(uint32_t count)
+{
+    LED_Init();
+    for (uint32_t n = 0; n < 2 * count; n++)
+    {
+        GPIOA->ODR ^= GPIOA1;
+        for (int i = 0; i < 1000000; i++) {__asm__("nop");}
+        IWDG_Refresh();
+    }
+    GPIOA->ODR &= ~GPIOA1;
+}
+
+/**
+  * Unrecoverable clock fault: signal it on the LED, then reset the part
+  */
+static void Fault_Reset(void)
+{
+    Fault_Blink(10);
+    NVIC_SystemReset();
+}
+
+/**
+  * Fall back to the HSI that is running out of reset when the HSE or the PLL
+  * fails to come up. Return the resulting UART5 kernel clock.
+  */
+static uint32_t SystemClock_Fallback_HSI(void)
+{
+    RCC->CR |= RCC_CR_HSION;
+    if (wait_bit(&RCC->CR, RCC_CR_HSIRDY, RCC_CR_HSIRDY) != 0)
+    {
+        Fault_Reset();
+    }
+
+    RCC->CFGR &= ~RCC_CFGR_SW;  // HSI as system clock
+    if (wait_bit(&RCC->CFGR, RCC_CFGR_SWS, RCC_CFGR_SWS_HSI) != 0)
+    {
+        Fault_Reset();
+    }
+
+    RCC->CR &= ~RCC_CR_HSEON;
+    RCC->CR &= ~RCC_CR_PLLON;
+
+    // Back to the reset value of the domain prescalers (no division)
+    RCC->D1CFGR = 0;
+    RCC->D2CFGR = 0;
+    RCC->D3CFGR = 0;
+
+    SystemCoreClock = PCLK1_HSI_HZ;
+    SystemD2Clock   = PCLK1_HSI_HZ;
+
+    return PCLK1_HSI_HZ;
+}
+
+/**
+  * System Clock Configuration
+  * Every ready-bit poll is bounded: on expiry the HSI fallback keeps the part
+  * running at reduced speed instead of hanging forever in early boot.
+  * Return the UART5 kernel clock (rcc_pclk1) in Hz.
+  */
+static uint32_t SystemClock_Config(void)
 {
     uint32_t __attribute((unused)) tmpreg ; 
 
@@ -192,21 +325,34 @@ static void SystemClock_Config(void)
     tmpreg = READ_BIT(SYSCFG->PWRCR, SYSCFG_PWRCR_ODEN);
 
     // Wait for VOS to be ready
-    while((PWR->D3CR & PWR_D3CR_VOSRDY) != PWR_D3CR_VOSRDY) {}
+    if (wait_bit(&PWR->D3CR, PWR_D3CR_VOSRDY, PWR_D3CR_VOSRDY) != 0)
+    {
+        return SystemClock_Fallback_HSI();
+    }
 
 	/** 2) Oscillator initialisation **/
 
 	//Enable HSE
 	RCC->CR |= RCC_CR_HSEON;
 	// Wait till HSE is ready
-	while((RCC->CR & RCC_CR_HSERDY) == 0);
+	if (wait_bit(&RCC->CR, RCC_CR_HSERDY, RCC_CR_HSERDY) != 0)
+	{
+		return SystemClock_Fallback_HSI();
+	}
 
 	// Switch (disconnect)
 	RCC->CFGR |= 0x2UL;                  // Swich to HSE temporarly
-	while((RCC->CFGR & RCC_CFGR_SWS) != (0x00000010UL));
+	if (wait_bit(&RCC->CFGR, RCC_CFGR_SWS, 0x00000010UL) != 0)
+	{
+		return SystemClock_Fallback_HSI();
+	}
 	RCC->CR   &= ~1;				 // Disable HSI
 	RCC->CR   &= ~(0x1UL << 24U);	// Disable PLL
-	while((RCC->CR & RCC_CR_PLL1RDY) != 0); // wait for PPL to be disabled
+	// wait for PLL to be disabled
+	if (wait_bit(&RCC->CR, RCC_CR_PLL1RDY, 0x0UL) != 0)
+	{
+		return SystemClock_Fallback_HSI();
+	}
 
     // Config PLL
 	//RCC -> PLLCKSELR |= RCC_PLLCKSELR_PLLSRC_HSE; //RCC -> PLLCKSELR |= (0x05UL << 4U);
@@ -254,7 +400,10 @@ static void SystemClock_Config(void)
 
 	// Enable the main PLL. //__HAL_RCC_PLL_ENABLE();
 	RCC->CR |= RCC_CR_PLLON;
-	while((RCC->CR & RCC_CR_PLL1RDY) == 0);
+	if (wait_bit(&RCC->CR, RCC_CR_PLL1RDY, RCC_CR_PLL1RDY) != 0)
+	{
+		return SystemClock_Fallback_HSI();
+	}
 
 	/** 3) Clock initialisation **/
 
@@ -267,7 +416,10 @@ static void SystemClock_Config(void)
 
 	//SW[2:0]: System clock switch//011: PLL1 selected as system clock (pll1_p_ck)
 	RCC->CFGR |= (0b011 << 0U);
-	while((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_PLL1);
+	if (wait_bit(&RCC->CFGR, RCC_CFGR_SWS, RCC_CFGR_SWS_PLL1) != 0)
+	{
+		return SystemClock_Fallback_HSI();
+	}
 
 	//D1PPRE[2:0]: D1 domain APB3 prescaler//100: rcc_pclk3 = rcc_hclk3 / 2
 	RCC->D1CFGR   |= (0b100 << 4U);
@@ -288,6 +440,8 @@ static void SystemClock_Config(void)
 	SystemD2Clock = (480000000 >> ((D1CorePrescTable[(RCC->D1CFGR & RCC_D1CFGR_HPRE)
 	                                                   >> RCC_D1CFGR_HPRE_Pos]) & 0x1FU));
 	SystemCoreClock = 480000000;
+
+	return PCLK1_PLL1_HZ;
 }
 
 /**
@@ -295,7 +449,8 @@ static void SystemClock_Config(void)
   */
 static inline void UART_send_blocking(uint8_t* byte)
 {
-    while(!(UART5->ISR & USART_ISR_TXE_TXFNF)){}; // wait for empty transmit register
+    // wait for empty transmit register, kicking the watchdog while idle
+    while(!(UART5->ISR & USART_ISR_TXE_TXFNF)){IWDG_Refresh();};
     UART5->TDR = *byte;
 }
 
@@ -304,7 +459,8 @@ static inline void UART_send_blocking(uint8_t* byte)
   */
 static inline void UART_rcv_blocking(uint8_t* byte)
 {
-    while(!(UART5->ISR & USART_ISR_RXNE_RXFNE)){}; // wait for non empty read register
+    // wait for non empty read register, kicking the watchdog while idle
+    while(!(UART5->ISR & USART_ISR_RXNE_RXFNE)){IWDG_Refresh();};
     *byte = UART5->RDR;
 
 }

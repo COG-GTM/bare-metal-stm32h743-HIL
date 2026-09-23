@@ -123,7 +123,7 @@ When sending data back to Simulink, note that a header (`'A'`) and a terminator 
 
 
 
-Note: the system clock frequency is set to 480MHz, assuming the presence of a 25MHz high speed external (HSE) crystal. If you do not use a HSE or if you have an older version of the chip you might have to modify the clock configuration function or rely on the default internal oscillator (64MHz). In that case you will have to change the baud rate register (e.g. with the internal oscillator at 64MHz and baud rate of 38400, the BRR should be modified with: uint16_t uartdiv = 64000000 / 38400;)
+Note: the system clock frequency is set to 480MHz, assuming the presence of a 25MHz high speed external (HSE) crystal. If the HSE crystal is absent/defective or the PLL fails to lock, every ready poll in the clock configuration times out after a bounded number of retries and the firmware falls back to the default internal oscillator (64MHz), blinking the LED a few times at start-up to signal the degraded clock. The baud rate register is computed from the resulting APB1 clock, so UART communication at 38400 baud keeps working in both cases.
 
 #### 2) Simulink
 

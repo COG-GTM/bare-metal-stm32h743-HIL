@@ -53,10 +53,20 @@ typedef union {
   uint8_t bytes[4];
 } custom_float_t;
 
+/* Clock configuration constants ---------------------------------------------*/
+#define CLOCK_READY_TIMEOUT  1000000UL   // bounded retries for every ready poll
+#define PCLK1_PLL_HZ         120000000UL // APB1 clock with HSE + PLL1 at 480 MHz
+#define PCLK1_HSI_HZ         64000000UL  // APB1 clock with the default HSI clock
+#define SYSCLK_PLL_HZ        480000000UL
+#define SYSCLK_HSI_HZ        64000000UL
+
 /* Private function prototypes -----------------------------------------------*/
-static void SystemClock_Config(void);
+static uint32_t SystemClock_Config(void);
+static uint32_t SystemClock_Fallback_HSI(void);
+static int wait_ready(volatile uint32_t*, uint32_t, uint32_t);
 static void LED_Init(void);
-static void UART_Init(void);
+static void UART_Init(uint32_t);
+static void signal_clock_fallback(void);
 static inline void toggle_LED(void);
 static inline void UART_send_blocking(uint8_t*);
 static inline void UART_rcv_blocking(uint8_t*);
@@ -69,11 +79,15 @@ int main(void)
 {
   
   /* Configure the system clock */
-  SystemClock_Config();
+  uint32_t pclk1 = SystemClock_Config();
 
   /* Initialize all configured peripherals */
   LED_Init();
-  UART_Init();
+  if (pclk1 != PCLK1_PLL_HZ)
+  {
+    signal_clock_fallback();
+  }
+  UART_Init(pclk1);
   
   /* Initialise variables */
   float TAS = 0;
@@ -150,7 +164,7 @@ static void LED_Init(void)
   * Configure UART5 peripherals
   * PB12: UART5_RX (receive), PB13: UART5_TX (transmit)
   */
-static void UART_Init(void)
+static void UART_Init(uint32_t pclk1)
 {
   
   // Enable peripheral clocks: GPIOB, UART5.
@@ -181,9 +195,8 @@ static void UART_Init(void)
   GPIOB->AFR[1]  &=  ~(0xFUL << 16U);
   GPIOB->AFR[1]  |=   (0xEUL << 16U); // AFR12[3:0] <- 0x1110 to set PB12 as AFR14 (UART5)
   
-  // Set baudrate (oversampling by 16)
-  uint16_t uartdiv = 120000000 / 38400;  
-  //uartdiv = 64000000 / 38400;  // uncomment if HSI (default clock) is used
+  // Set baudrate (oversampling by 16), derived from the actual APB1 clock
+  uint16_t uartdiv = (uint16_t)(pclk1 / 38400);
   UART5->BRR = uartdiv;
   
   
@@ -193,9 +206,49 @@ static void UART_Init(void)
 }
 
 /**
-  * System Clock Configuration
+  * Poll a register field until it matches the expected value, with a bounded
+  * number of retries. Returns 1 on match, 0 on timeout.
   */
-static void SystemClock_Config(void)
+static int wait_ready(volatile uint32_t* reg, uint32_t mask, uint32_t expected)
+{
+	for (uint32_t i = 0; i < CLOCK_READY_TIMEOUT; i++)
+	{
+		if ((*reg & mask) == expected) { return 1; }
+	}
+	return 0;
+}
+
+/**
+  * Select the internal HSI oscillator as system clock. Used when the HSE
+  * crystal or PLL1 never becomes ready, so that boot completes on a degraded
+  * but functional clock instead of hanging. Returns the resulting APB1 clock.
+  */
+static uint32_t SystemClock_Fallback_HSI(void)
+{
+	// Enable HSI (undivided) and wait for it, bounded
+	RCC->CR |= RCC_CR_HSION;
+	RCC->CR &= ~RCC_CR_HSIDIV;
+	wait_ready(&RCC->CR, RCC_CR_HSIRDY, RCC_CR_HSIRDY);
+
+	// Select HSI as system clock and restore the reset value of the prescalers
+	MODIFY_REG(RCC->CFGR, RCC_CFGR_SW, RCC_CFGR_SW_HSI);
+	wait_ready(&RCC->CFGR, RCC_CFGR_SWS, RCC_CFGR_SWS_HSI);
+	RCC->D1CFGR = 0;
+	RCC->D2CFGR = 0;
+	RCC->D3CFGR = 0;
+
+	SystemCoreClock = SYSCLK_HSI_HZ;
+	SystemD2Clock   = SYSCLK_HSI_HZ;
+
+	return PCLK1_HSI_HZ;
+}
+
+/**
+  * System Clock Configuration. Returns the APB1 clock frequency in Hz:
+  * PCLK1_PLL_HZ when HSE + PLL1 came up, PCLK1_HSI_HZ when the HSI fallback
+  * had to be used.
+  */
+static uint32_t SystemClock_Config(void)
 {
     uint32_t __attribute((unused)) tmpreg ; 
 
@@ -215,21 +268,35 @@ static void SystemClock_Config(void)
     tmpreg = READ_BIT(SYSCFG->PWRCR, SYSCFG_PWRCR_ODEN);
 
     // Wait for VOS to be ready
-    while((PWR->D3CR & PWR_D3CR_VOSRDY) != PWR_D3CR_VOSRDY) {}
+    if (!wait_ready(&PWR->D3CR, PWR_D3CR_VOSRDY, PWR_D3CR_VOSRDY))
+    {
+        return SystemClock_Fallback_HSI();
+    }
 
 	/** 2) Oscillator initialisation **/
 
 	//Enable HSE
 	RCC->CR |= RCC_CR_HSEON;
 	// Wait till HSE is ready
-	while((RCC->CR & RCC_CR_HSERDY) == 0);
+	if (!wait_ready(&RCC->CR, RCC_CR_HSERDY, RCC_CR_HSERDY))
+	{
+		RCC->CR &= ~RCC_CR_HSEON;
+		return SystemClock_Fallback_HSI();
+	}
 
 	// Switch (disconnect)
 	RCC->CFGR |= 0x2UL;                  // Swich to HSE temporarly
-	while((RCC->CFGR & RCC_CFGR_SWS) != (0x00000010UL));
+	if (!wait_ready(&RCC->CFGR, RCC_CFGR_SWS, 0x00000010UL))
+	{
+		return SystemClock_Fallback_HSI();
+	}
 	RCC->CR   &= ~1;				 // Disable HSI
 	RCC->CR   &= ~(0x1UL << 24U);	// Disable PLL
-	while((RCC->CR & RCC_CR_PLL1RDY) != 0); // wait for PPL to be disabled
+	// wait for PLL to be disabled
+	if (!wait_ready(&RCC->CR, RCC_CR_PLL1RDY, 0UL))
+	{
+		return SystemClock_Fallback_HSI();
+	}
 
     // Config PLL
 	//RCC -> PLLCKSELR |= RCC_PLLCKSELR_PLLSRC_HSE; //RCC -> PLLCKSELR |= (0x05UL << 4U);
@@ -277,7 +344,11 @@ static void SystemClock_Config(void)
 
 	// Enable the main PLL. //__HAL_RCC_PLL_ENABLE();
 	RCC->CR |= RCC_CR_PLLON;
-	while((RCC->CR & RCC_CR_PLL1RDY) == 0);
+	if (!wait_ready(&RCC->CR, RCC_CR_PLL1RDY, RCC_CR_PLL1RDY))
+	{
+		RCC->CR &= ~RCC_CR_PLLON;
+		return SystemClock_Fallback_HSI();
+	}
 
 	/** 3) Clock initialisation **/
 
@@ -290,7 +361,10 @@ static void SystemClock_Config(void)
 
 	//SW[2:0]: System clock switch//011: PLL1 selected as system clock (pll1_p_ck)
 	RCC->CFGR |= (0b011 << 0U);
-	while((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_PLL1);
+	if (!wait_ready(&RCC->CFGR, RCC_CFGR_SWS, RCC_CFGR_SWS_PLL1))
+	{
+		return SystemClock_Fallback_HSI();
+	}
 
 	//D1PPRE[2:0]: D1 domain APB3 prescaler//100: rcc_pclk3 = rcc_hclk3 / 2
 	RCC->D1CFGR   |= (0b100 << 4U);
@@ -310,7 +384,22 @@ static void SystemClock_Config(void)
 	const  uint8_t D1CorePrescTable[16] = {0, 0, 0, 0, 1, 2, 3, 4, 1, 2, 3, 4, 6, 7, 8, 9};
 	SystemD2Clock = (480000000 >> ((D1CorePrescTable[(RCC->D1CFGR & RCC_D1CFGR_HPRE)
 	                                                   >> RCC_D1CFGR_HPRE_Pos]) & 0x1FU));
-	SystemCoreClock = 480000000;
+	SystemCoreClock = SYSCLK_PLL_HZ;
+
+	return PCLK1_PLL_HZ;
+}
+
+/**
+  * Blink the LED to report that the clock configuration fell back to the HSI
+  */
+static void signal_clock_fallback(void)
+{
+	for (int i = 0; i < 6; i++)
+	{
+		GPIOA->ODR ^= GPIOA1;
+		delay(2000000);
+	}
+	GPIOA->ODR |= GPIOA1;  // pull up (set) => OFF
 }
 
 /**

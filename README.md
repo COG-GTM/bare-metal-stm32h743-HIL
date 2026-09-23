@@ -102,16 +102,15 @@ typedef union {  // allows us to store different data types in the same memory l
 } custom_float_t;
 ```
 
-That way we can store / access the data byte per byte when we receive / send, or 4 bytes at a time when we use the object inside the code. For example, when receiving data, we use: 
+That way we can store / access the data byte per byte when we receive / send, or 4 bytes at a time when we use the object inside the code.
+
+Data are exchanged in both directions as framed messages: a header (`'H'`) character, the 4 payload bytes of the `float` and a terminator (`'\0'`) character. Without such a frame, a single byte lost or added on the line would shift the byte phase of the receiver permanently and every subsequent `float` would be assembled from parts of two different samples. When receiving, the microcontroller therefore discards bytes until a header is found, reads the 4 payload bytes and only accepts the sample if the expected terminator follows:
 ```C
 custom_float_t rcv;
-// Reception from Simulink
-for (int i=0; i<4; i++)  // 1 float = 4 bytes
-{
-    UART_rcv_blocking(&rcv.bytes[i]);  // receive in blocking mode, 1 byte at a time (= uint8_t)
-}
+// Reception from Simulink (header + 4 payload bytes + terminator)
+UART_rcv_float_blocking(&rcv);  // resynchronises on the header, rejects unterminated frames
 ```
-which allows us to store the data byte per byte as they are received into the union type variable `rcv`. Then, we can store the 4 bytes of data at a time into a variable with `float` type as follows
+so a corrupted frame costs a single sample instead of desynchronising the stream for good. Then, we can store the 4 bytes of data at a time into a variable with `float` type as follows
 ```C
 float TAS = rcv.single;  // store the 4 bytes as a float
 ```
@@ -122,7 +121,7 @@ $$ u_k = k_p (v_k^* - v_k) + k_i \sum_{i=0}^k (v_i^* - v_i) d + k_d (v_{k-1} - v
 
 where $v_k$, $v_k^*$ are the TAS and reference TAS at step $k$, $k_p$, $k_i$, $k_d$ are PID gains, and $d$ is the time step. 
 
-When sending data back to Simulink, note that a header (`'A'`) and a terminator (`'\0'`) character should be prepended and appended to the data sent in order to improve the robustness of the data exchange, allowing Simulink to synchronise with the data sent by the microcontroller. 
+When sending data back to Simulink, the same header (`'H'`) and terminator (`'\0'`) characters are prepended and appended to the data sent in order to improve the robustness of the data exchange, allowing Simulink to synchronise with the data sent by the microcontroller. 
 
 
 
@@ -148,7 +147,7 @@ We now detail the configuration of all blocks
 #### "Receive from stm32h743":
 Acquire data from the chip. Configuration: 
 * **COM port name:** specify the name of the COM port associated with the device (in my setup it was `/dev/cu.usbserial-14201` but yours will certainly have a different name).  
-* **Header and terminator:** add header (`'A'`) and terminator (`'\0'`) characters. This allows Simulink to know when a message starts and ends and prevent synchronisation issues. 
+* **Header and terminator:** add header (`'H'`) and terminator (`'\0'`) characters, matching the ones sent by the firmware. This allows Simulink to know when a message starts and ends and prevent synchronisation issues. 
 *  **Data type:** set to `single` (4 bytes) as we receive a `float` from the microcontroller (both types are equivalent).  
 * **Data size:** the data size is set to `[1 1]` as we send 1  `single` / `float` (change it to `[1 N]` if N `single` / `float` are sent). 
 * **Enable blocking mode:** tick the box to receive in blocking mode.
@@ -177,6 +176,8 @@ Send data to the chip. Configuration:
 
 * **COM port name:** specify the name of the COM port associated with the device (same as previously)  
 * **Enable blocking mode:** tick the box to send in blocking mode.
+
+The block has no header / terminator option, so the frame expected by the firmware has to be built explicitly: insert a "Matrix Concatenate" (`uint8` vector, horizontal) between "Byte pack" and "Send to stm32h743" that concatenates a `uint8` constant `72` (`'H'`), the 4 payload bytes and a `uint8` constant `0` (`'\0'`). The firmware discards any byte received outside of such a frame, so it will not decode samples until this is in place.
 
 #### "UART Configuration":
 Configure the serial port. Configuration:

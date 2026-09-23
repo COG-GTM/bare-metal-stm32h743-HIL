@@ -6,7 +6,8 @@
 ## Architecture
 
 The PID control law lives in `src/pid.c` and knows nothing about registers.
-The byte protocol (`custom_float_t`, `'H'` header, `'\0'` terminator) lives in
+The byte protocol (`custom_float_t`, `'H'` header, `'\0'` terminator and the
+`hil_rx_t` receive state machine that resynchronises on it) lives in
 `include/hil_protocol.h`. Both files are compiled twice:
 
 | Build            | Compiler          | I/O                             | Plant                              |
@@ -19,14 +20,14 @@ flowchart LR
     subgraph HW["Hardware-in-the-loop (target)"]
         SIM["Simulink plant<br/>uart.slx<br/>point-mass aircraft"]
         FW["STM32H743 firmware<br/>src/main.c + src/pid.c<br/>bare-metal UART5, 480 MHz"]
-        SIM -- "float32 TAS (4 bytes)" --> FW
+        SIM -- "'H' + float32 TAS + '\\0'" --> FW
         FW -- "'H' + float32 thrust + '\\0'" --> SIM
     end
 
     subgraph SW["Software-in-the-loop (host, no hardware)"]
         PY["host/plant.py<br/>same point-mass model<br/>RK4, ZOH @ 0.1 s"]
         NODE["host/pid_node<br/>host gcc build of<br/>src/pid.c + firmware loop"]
-        PY -- "float32 TAS (4 bytes)" --> NODE
+        PY -- "'H' + float32 TAS + '\\0'" --> NODE
         NODE -- "'H' + float32 thrust + '\\0'" --> PY
     end
 
@@ -99,13 +100,18 @@ host / emulated target / (and by construction) hardware.
 
 - `src/pid.c`, `include/pid.h` — `pid_ctrl_t`, `pid_init()`, `pid_step()`. Derivative is on the
   measurement `(v_{k-1} - v_k)/d`, as in the original firmware.
-- `include/hil_protocol.h` — `custom_float_t` union, header/terminator, payload size.
+- `include/hil_protocol.h` — `custom_float_t` union, header/terminator, payload size and
+  `hil_rx_push()`, which discards bytes until a header and rejects a frame whose terminator
+  is missing, so a lost byte costs one sample instead of desynchronising the stream.
+- `host/hil_test.c` — host unit tests for the framing, the receive resynchronisation and the
+  blocking I/O helpers (`make test`). `host/plant.py --drop-byte-at <t>` drops a byte on the
+  wire end to end.
 - `host/pid_node.c` — the firmware main loop with `UART_send_blocking`/`UART_rcv_blocking`
   reimplemented on a file descriptor. Takes an optional setpoint step
   (`ref step_ref step_sample`) so the harness can command a step without changing the protocol.
 - `host/pid_test.c` — host unit tests for the control law (`make test`).
 - `host/plant.py` — plant, PTY plumbing, CSV + PNG output, step metrics.
 
-Note: the README describes the header as `'A'`; the firmware (and therefore
-`hil_protocol.h`) uses `'H'`. Keep the Simulink receive block in sync with the
-constant in `hil_protocol.h`.
+Note: both directions are framed, so the Simulink send block must prepend the
+header and append the terminator, and its receive block must use the same
+constants as `hil_protocol.h` (`'H'` / `'\0'`).

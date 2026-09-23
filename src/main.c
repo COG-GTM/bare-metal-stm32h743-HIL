@@ -55,6 +55,7 @@ static void LED_Init(void);
 static void UART_Init(void);
 static inline void UART_send_blocking(uint8_t*);
 static inline void UART_rcv_blocking(uint8_t*);
+static void UART_rcv_float_blocking(custom_float_t*);
 
 /**
   * The application entry point.
@@ -83,10 +84,7 @@ int main(void)
   {
 
     	// Reception from Simulink
-    	for (int i=0; i<HIL_FLOAT_BYTES; i++)
-    	{
-            UART_rcv_blocking(&rcv.bytes[i]);
-    	}
+    	UART_rcv_float_blocking(&rcv);
     	                   
     	// Controller (PID)
     	TAS = rcv.single;                          // get true airspeed (TAS)
@@ -307,4 +305,19 @@ static inline void UART_rcv_blocking(uint8_t* byte)
     while(!(UART5->ISR & USART_ISR_RXNE_RXFNE)){}; // wait for non empty read register
     *byte = UART5->RDR;
 
+}
+
+/**
+  * Receive a framed float (header + 4 payload bytes + terminator) in blocking mode
+  */
+static void UART_rcv_float_blocking(custom_float_t* value)
+{
+    hil_rx_t rx;
+    uint8_t byte = 0;
+
+    hil_rx_init(&rx);
+    do
+    {
+        UART_rcv_blocking(&byte);
+    } while (!hil_rx_push(&rx, byte, value));
 }

@@ -6,7 +6,7 @@ host-built controller (host/pid_node, which compiles the same src/pid.c as the
 firmware) on the slave side, and exchanges bytes with it using exactly the
 protocol the STM32 firmware speaks:
 
-    plant -> controller : float32 TAS (4 bytes, little endian)
+    plant -> controller : b'H' + float32 TAS (4 bytes, little endian) + b'\\0'
     controller -> plant : b'H' + float32 thrust (4 bytes) + b'\\0'
 
 Plant (from Simulink/param_init.m, level flight, lift = weight):
@@ -75,6 +75,14 @@ def read_exact(fd, n):
     return buf
 
 
+def send_frame(fd, value, drop_byte=False):
+    """Frame a float32 as header + payload + terminator (drop_byte: line fault)."""
+    frame = b"H" + struct.pack("<f", value) + b"\0"
+    if drop_byte:
+        frame = frame[:2] + frame[3:]
+    os.write(fd, frame)
+
+
 def recv_frame(fd):
     """Sync on header 'H', return float32 payload, expect '\\0' terminator."""
     while True:
@@ -124,14 +132,19 @@ def run(args):
     dt = args.dt
     v = args.init_tas
     t = 0.0
+    u = 0.0
     log = []
     k = 0
     try:
         while t <= args.duration + 1e-9:
             sp = args.sp_ms if k >= step_sample else args.ref_ms
             k += 1
-            os.write(master, struct.pack("<f", v))
-            u = recv_frame(master)
+            drop = args.drop_byte_at is not None and abs(t - args.drop_byte_at) < dt / 2
+            send_frame(master, v, drop_byte=drop)
+            if not drop:
+                u = recv_frame(master)
+            # else: the controller discards the malformed frame and stays silent
+            # for this sample, so the actuator holds the previous thrust command
             err = sp - v
             log.append((t, v, sp, u, err))
             v, _ = plant_step(v, u, dt, args.t_max)
@@ -220,6 +233,9 @@ def main():
     p.add_argument("--init-kt", type=float, default=120.0, help="initial TAS [kt]")
     p.add_argument("--t-max", type=float, default=40e3, help="max thrust [N]")
     p.add_argument("--realtime", action="store_true", help="sleep dt each sample")
+    p.add_argument("--drop-byte-at", type=float, default=None,
+                   help="time [s] at which one byte of the frame sent to the controller "
+                        "is dropped, to check that the controller resynchronises")
     args = p.parse_args()
     args.ref_ms = args.ref_kt * KT2MS
     args.sp_ms = args.step_kt * KT2MS

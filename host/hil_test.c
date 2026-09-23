@@ -13,6 +13,19 @@
 static int fails = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); fails++; } else printf("ok:   %s\n", msg); } while (0)
 
+/* Feed stream[from:len] to the receive state machine, collect the frames it accepts. */
+static int decode(const uint8_t *stream, int len, int from, float *out)
+{
+  hil_rx_t rx;
+  custom_float_t value;
+  int n = 0;
+  hil_rx_init(&rx);
+  for (int i = from; i < len; i++) {
+    if (hil_rx_push(&rx, stream[i], &value)) { out[n++] = value.single; }
+  }
+  return n;
+}
+
 int main(void)
 {
   signal(SIGPIPE, SIG_IGN);   /* like a PTY: a write to a closed peer must fail, not kill us */
@@ -28,6 +41,40 @@ int main(void)
   custom_float_t back;
   memcpy(back.bytes, &frame[1], HIL_FLOAT_BYTES);
   CHECK(back.single == 1.0f, "payload round-trips through custom_float_t");
+
+  /* --- receive resynchronisation ------------------------------------------ */
+  {
+    const float vals[] = {80.0f, 66.5f, 72.25f, 12345.6f, -3.5f};
+    const int n_vals = (int)(sizeof vals / sizeof vals[0]);
+    uint8_t stream[8 * HIL_FRAME_BYTES];
+    float got[8];
+    int len, n;
+
+    len = 0;
+    for (int i = 0; i < n_vals; i++) {
+      hil_frame_encode(vals[i], &stream[len]);
+      len += HIL_FRAME_BYTES;
+    }
+    n = decode(stream, len, 0, got);
+    CHECK(n == n_vals && memcmp(got, vals, sizeof vals) == 0, "clean stream decodes every frame");
+
+    n = decode(stream, len, 3, got);           /* receiver boots mid-frame */
+    CHECK(n == n_vals - 1 && got[0] == vals[1], "mid-stream start resyncs on the next frame");
+
+    uint8_t lost[sizeof stream];               /* one payload byte lost on the line */
+    memcpy(lost, stream, (size_t)len);
+    memmove(&lost[8], &lost[9], (size_t)(len - 9));
+    n = decode(lost, len - 1, 0, got);
+    CHECK(n == n_vals - 1 && got[0] == vals[0] && got[1] == vals[2] && got[3] == vals[4],
+          "a dropped byte costs one frame, later frames still decode");
+
+    uint8_t noisy[2 + sizeof stream];          /* line noise before the first header */
+    noisy[0] = 0x5A;
+    noisy[1] = 0x13;
+    memcpy(&noisy[2], stream, (size_t)len);
+    n = decode(noisy, len + 2, 0, got);
+    CHECK(n == n_vals && memcmp(got, vals, sizeof vals) == 0, "leading line noise is discarded");
+  }
 
   hil_frame_encode(6790.5f, frame);
   memcpy(back.bytes, &frame[1], HIL_FLOAT_BYTES);

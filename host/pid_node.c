@@ -4,8 +4,8 @@
  *
  * This is the firmware main loop (src/main.c) with the UART5 register accesses
  * replaced by blocking POSIX read()/write() on a serial device / pseudo-terminal.
- * The control law itself is the unmodified src/pid.c, and the byte protocol is
- * the unmodified include/hil_protocol.h.
+ * The control law itself is the unmodified src/pid.c, and the byte protocol
+ * (including the receive resynchronisation) is include/hil_protocol.h.
  *
  * Usage: pid_node <tty-device> [ref_TAS] [step_ref_TAS step_sample]
  *   ref_TAS         setpoint (m/s), default 80 as in the firmware
@@ -54,15 +54,20 @@ int main(int argc, char **argv)
   float u = 0;
   custom_float_t rcv;
   uint8_t frame[HIL_FRAME_BYTES];
+  hil_rx_t rx;
   pid_ctrl_t pid;
   pid_init(&pid, 500.0f, 30.0f, 10.0f, 0.1f, 66.5f);
+  hil_rx_init(&rx);
 
   while (1)
   {
     /* Reception from plant */
-    int r = hil_read_all(uart_fd, rcv.bytes, HIL_FLOAT_BYTES);
-    if (r == 0 || (r < 0 && errno == EIO)) return 0;       /* peer closed (PTY master hangup -> EIO) */
-    if (r < 0) { perror("read"); return 1; }
+    uint8_t byte;
+    do {
+      int r = hil_read_all(uart_fd, &byte, 1);
+      if (r == 0 || (r < 0 && errno == EIO)) return 0;     /* peer closed (PTY master hangup -> EIO) */
+      if (r < 0) { perror("read"); return 1; }
+    } while (!hil_rx_push(&rx, byte, &rcv));
 
     /* Controller (PID) */
     if (step_at >= 0 && k == step_at) ref_TAS = step_ref;

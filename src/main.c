@@ -27,7 +27,27 @@
 #include "main.h"
 #include "pid.h"
 #include "hil_protocol.h"
+#include <stdbool.h>
 #include <stdint.h>
+
+/* Bounded waits for the UART polling loops (in poll iterations) */
+#define UART_TX_POLL_TIMEOUT   3000000UL
+#define UART_RX_POLL_TIMEOUT   30000000UL
+
+/* Independent watchdog: LSI/64, ~1000 counts before reset */
+#define IWDG_PRESCALER      IWDG_PR_PR_2
+#define IWDG_RELOAD         1000UL
+#define IWDG_INIT_TIMEOUT   1000000UL
+#define IWDG_KEY_ENABLE     0x5555UL
+#define IWDG_KEY_RELOAD     0xAAAAUL
+#define IWDG_KEY_START      0xCCCCUL
+
+/* PID tuning */
+#define PID_KP          500.0f
+#define PID_KI          30.0f
+#define PID_KD          10.0f
+#define PID_DT          0.1f
+#define PID_INIT_MEAS   66.5f
 
 
 // Uncomment this if you want to use the printf function (for debug purpose)
@@ -53,8 +73,12 @@ int _write(int handle, char* data, int size) {
 static void SystemClock_Config(void);
 static void LED_Init(void);
 static void UART_Init(void);
-static inline void UART_send_blocking(uint8_t*);
-static inline void UART_rcv_blocking(uint8_t*);
+static void IWDG_Init(void);
+static inline void IWDG_refresh(void);
+static inline bool UART_send_blocking(uint8_t*);
+static inline bool UART_rcv_blocking(uint8_t*);
+static inline void UART_clear_errors(void);
+static inline void UART_flush_rx(void);
 
 /**
   * The application entry point.
@@ -68,6 +92,7 @@ int main(void)
   /* Initialize all configured peripherals */
   LED_Init();
   UART_Init();
+  IWDG_Init();
   
   /* Initialise variables */
   float TAS = 0;
@@ -75,28 +100,44 @@ int main(void)
   float u = 0;
   custom_float_t rcv;
   uint8_t frame[HIL_FRAME_BYTES];
+  bool link_ok = true;
   pid_ctrl_t pid;
-  pid_init(&pid, 500.0f, 30.0f, 10.0f, 0.1f, 66.5f);
+  pid_init(&pid, PID_KP, PID_KI, PID_KD, PID_DT, PID_INIT_MEAS);
   
   /* Infinite loop */ 
   while (1)
   {
 
+    	IWDG_refresh();
+    	UART_clear_errors();
+
     	// Reception from Simulink
-    	for (int i=0; i<HIL_FLOAT_BYTES; i++)
+    	link_ok = true;
+    	for (int i=0; i<HIL_FLOAT_BYTES && link_ok; i++)
     	{
-            UART_rcv_blocking(&rcv.bytes[i]);
+            link_ok = UART_rcv_blocking(&rcv.bytes[i]);
     	}
     	                   
-    	// Controller (PID)
-    	TAS = rcv.single;                          // get true airspeed (TAS)
-    	u = pid_step(&pid, ref_TAS, TAS);          // control law
+    	if (link_ok)
+    	{
+    	    // Controller (PID)
+    	    TAS = rcv.single;                      // get true airspeed (TAS)
+    	    u = pid_step(&pid, ref_TAS, TAS);      // control law
+    	}
+    	else
+    	{
+    	    // Failsafe: zero thrust, drop stale PID state, resynchronise the link
+    	    u = 0;
+    	    pid_init(&pid, PID_KP, PID_KI, PID_KD, PID_DT, PID_INIT_MEAS);
+    	    UART_flush_rx();
+    	}
     	
     	// Transmission to Simulink: header + float32 + terminator
     	hil_frame_encode(u, frame);
-    	for (int i=0; i<HIL_FRAME_BYTES; i++)
+    	link_ok = true;
+    	for (int i=0; i<HIL_FRAME_BYTES && link_ok; i++)
     	{
-            UART_send_blocking(&frame[i]);
+            link_ok = UART_send_blocking(&frame[i]);
     	}
   }
 
@@ -293,18 +334,79 @@ static void SystemClock_Config(void)
 /**
   * Send in blocking mode using UART5 peripheral
   */
-static inline void UART_send_blocking(uint8_t* byte)
+static inline bool UART_send_blocking(uint8_t* byte)
 {
-    while(!(UART5->ISR & USART_ISR_TXE_TXFNF)){}; // wait for empty transmit register
+    uint32_t timeout = UART_TX_POLL_TIMEOUT;
+    while(!(UART5->ISR & USART_ISR_TXE_TXFNF))    // wait for empty transmit register
+    {
+        if (--timeout == 0) { return false; }
+    }
     UART5->TDR = *byte;
+    return true;
 }
 
 /**
   * Receiving in blockin mode using UART5 peripheral 
   */
-static inline void UART_rcv_blocking(uint8_t* byte)
+static inline bool UART_rcv_blocking(uint8_t* byte)
 {
-    while(!(UART5->ISR & USART_ISR_RXNE_RXFNE)){}; // wait for non empty read register
+    uint32_t timeout = UART_RX_POLL_TIMEOUT;
+    while(!(UART5->ISR & USART_ISR_RXNE_RXFNE))   // wait for non empty read register
+    {
+        if (UART5->ISR & (USART_ISR_ORE | USART_ISR_FE | USART_ISR_NE))
+        {
+            return false;
+        }
+        if (--timeout == 0) { return false; }
+    }
     *byte = UART5->RDR;
 
+    return true;
+}
+
+/**
+  * Clear the UART5 overrun, framing and noise error flags
+  */
+static inline void UART_clear_errors(void)
+{
+    if (UART5->ISR & (USART_ISR_ORE | USART_ISR_FE | USART_ISR_NE))
+    {
+        UART5->ICR = USART_ICR_ORECF | USART_ICR_FECF | USART_ICR_NECF;
+    }
+}
+
+/**
+  * Drop pending received bytes so the next frame starts aligned
+  */
+static inline void UART_flush_rx(void)
+{
+    uint32_t guard = UART_TX_POLL_TIMEOUT;
+    UART_clear_errors();
+    while((UART5->ISR & USART_ISR_RXNE_RXFNE) && (--guard != 0))
+    {
+        (void)UART5->RDR;
+    }
+    UART_clear_errors();
+}
+
+/**
+  * Start the independent watchdog so a residual hang triggers a reset
+  */
+static void IWDG_Init(void)
+{
+    IWDG1->KR  = IWDG_KEY_START;
+    IWDG1->KR  = IWDG_KEY_ENABLE;
+    IWDG1->PR  = IWDG_PRESCALER;
+    IWDG1->RLR = IWDG_RELOAD;
+    uint32_t timeout = IWDG_INIT_TIMEOUT;
+    while(IWDG1->SR != 0 && --timeout != 0) {}
+    IWDG1->KR  = IWDG_KEY_RELOAD;
+}
+
+/**
+  * Refresh the independent watchdog counter
+  */
+static inline void IWDG_refresh(void)
+{
+    IWDG1->KR = IWDG_KEY_RELOAD;
 }

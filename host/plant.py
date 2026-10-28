@@ -183,24 +183,28 @@ def write_outputs(log, out):
 
 
 def step_metrics(log, step_time):
-    post = [r for r in log if r[0] >= step_time]
+    """Rise(90%), overshoot, settle(2% of step) and final error after step_time."""
+    post = [r for r in log if r[0] >= step_time - 1e-9]
     if not post:
-        return
+        return None
     sp = post[0][2]
     v0 = post[0][1]
     delta = sp - v0
-    peak = max(r[1] for r in post)
+    peak = max(r[1] for r in post) if delta >= 0 else min(r[1] for r in post)
     overshoot = (peak - sp) / delta * 100 if delta else 0
     band = 0.02 * abs(delta)
     settle = None
     for i, r in enumerate(post):
         if all(abs(rr[1] - sp) <= band for rr in post[i:]):
-            settle = r[0] - step_time
+            settle = round(r[0] - step_time, 6)
             break
-    rise = next((r[0] - step_time for r in post if (r[1] - v0) / delta >= 0.9), None)
-    print(f"step {v0/KT2MS:.1f} -> {sp/KT2MS:.1f} kt: rise(90%)={rise}s  "
+    rise = next((round(r[0] - step_time, 6) for r in post if delta and (r[1] - v0) / delta >= 0.9), None)
+    m = dict(v0_kt=v0 / KT2MS, sp_kt=sp / KT2MS, rise_s=rise, overshoot_pct=overshoot,
+             settle_s=settle, final_err_kt=post[-1][4] / KT2MS)
+    print(f"step {m['v0_kt']:.1f} -> {m['sp_kt']:.1f} kt: rise(90%)={rise}s  "
           f"overshoot={overshoot:.1f}%  settle(2%)={settle}s  "
-          f"final err={post[-1][4]/KT2MS:+.3f} kt")
+          f"final err={m['final_err_kt']:+.3f} kt")
+    return m
 
 
 def main():

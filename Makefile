@@ -130,6 +130,18 @@ test: $(HOST_TESTS)
 hil: $(HOST_BIN)
 	python3 host/plant.py --controller ./$(HOST_BIN) --out host/results
 
+# Requirement gate on the software-HIL step run (fails the build on violation).
+.PHONY: hil-check
+hil-check: hil
+	python3 host/hil_check.py host/results.csv
+
+# Firmware-in-the-loop: ARM main.elf on Renode vs the host build, same plant.
+RENODE ?= renode
+.PHONY: fil
+fil: $(TARGET).elf
+	RENODE=$(RENODE) ./host/renode/fil.sh
+	python3 host/hil_check.py host/results_fil_target.csv --equiv host/results_fil_host.csv
+
 .PHONY: flash 
 flash: all
 	st-flash erase 
@@ -142,3 +154,4 @@ clean:
 	rm -f $(TARGET).bin
 	rm -f $(TARGET).map
 	rm -f $(HOST_BIN) $(HOST_TESTS)
+	rm -f host/results*.csv host/results*.png host/results*.json host/results*.log

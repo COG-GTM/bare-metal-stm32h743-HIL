@@ -89,11 +89,24 @@ python3 host/plant.py --tcp 127.0.0.1:3456 --ref-kt 155.5 --step-kt 155.5 \
 ![firmware under Renode](renode_firmware_hil_155kt.png)
 
 Comparing this run against the host `pid_node` build with identical initial
-conditions gives max |thrust diff| = 79 N (of ~3 kN trim) and max |TAS diff| =
-0.05 m/s over 600 samples — the residual comes from the Cortex-M7 build
-contracting `a*b+c` into fused multiply-adds while the x86 host build does not.
-The control law, framing and protocol are otherwise identical across
-host / emulated target / (and by construction) hardware.
+conditions *and the firmware's exact 80 m/s setpoint* gives **601/601 thrust
+samples bit-identical** (max |thrust diff| = 0 N). An earlier 79 N residual came
+from commanding 155.5 kt (79.996 m/s) on the host side, not from the compiler.
+
+## Requirement gate and CI
+
+`host/hil_check.py` turns a run into pass/fail against explicit limits
+(`STEP_REQS`, `ACT_REQS`, `EQUIV_REQS`) and exits non-zero on any violation:
+
+```sh
+make hil-check                                # REQ-SPD-01..04 + REQ-ACT-01..02 on the 120->150 kt step
+make fil RENODE=/path/to/renode               # main.elf on Renode vs host build: REQ-EQV-01..02 + REQ-ACT
+```
+
+`.github/workflows/build-and-hil.yml` runs `make`, `make host test`,
+`make hil-check` and `make fil` on every push/PR, writes the requirement table
+to the job summary and uploads `main.elf`, `main.map`, the size report and all
+`host/results*` traces as the `hil-results` artifact.
 
 ## What's what
 

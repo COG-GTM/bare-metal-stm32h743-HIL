@@ -5,6 +5,8 @@ main.map
 host/pid_node
 host/pid_test
 host/hil_test
-host/results.csv
-host/results.png
+host/results*.csv
+host/results*.png
+host/results*.json
+host/results*.log
 __pycache__/

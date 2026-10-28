@@ -1,0 +1,49 @@
+name: build-and-hil
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-hil:
+    runs-on: ubuntu-22.04
+    env:
+      RENODE_VERSION: 1.16.1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib \
+            python3-matplotlib
+
+      - name: Firmware build (arm-none-eabi-gcc, Cortex-M7)
+        run: make | tee firmware_size.txt
+
+      - name: Host build + unit tests
+        run: make host test
+
+      - name: Software HIL + requirement gate
+        run: make hil-check
+
+      - name: Install Renode
+        run: |
+          curl -sSL -o renode.tgz \
+            https://github.com/renode/renode/releases/download/v${RENODE_VERSION}/renode-${RENODE_VERSION}.linux-portable-dotnet.tar.gz
+          mkdir -p "$HOME/renode" && tar xzf renode.tgz -C "$HOME/renode" --strip-components=1
+
+      - name: Firmware-in-the-loop (main.elf on Renode) + equivalence gate
+        run: make fil RENODE="$HOME/renode/renode"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hil-results
+          path: |
+            main.elf
+            main.map
+            firmware_size.txt
+            host/results*
